@@ -1,0 +1,67 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+
+' requirements: REQ-006 REQ-007 REQ-008 REQ-009 REQ-010 REQ-011 REQ-012 REQ-013 REQ-016 REQ-017
+title 状态图（一）｜订单的七种状态
+hide empty description
+state "待确认\nPending" as Pending
+state "已确认\nConfirmed" as Confirmed
+state "已入住\nCheckedIn" as CheckedIn
+state "已退房\nCheckedOut" as CheckedOut
+state "已取消\nCancelled" as Cancelled
+state "已拒绝\nRejected" as Rejected
+state "已超时\nExpired" as Expired
+[*] --> Pending : 整段创建成功\n/ 逐晚建立预占，截止＝创建＋15分钟
+Pending --> Confirmed : 所属工作人员接受\n[now < 截止，无影响履约异常]\n/ 预占转承诺，数量不变
+Pending --> Rejected : 工作人员拒绝 / 酒店异常拒绝\n[now < 截止，原因已填写]\n/ 释放全部预占
+Pending --> Cancelled : 顾客取消 [now < 截止]\n/ 释放全部预占
+Pending --> Expired : 处理到期 [now >= 截止]\n/ 释放全部预占
+Confirmed --> CheckedIn : 所属工作人员核实后入住\n[入住日14:00 <= now < 离店日12:00，且无阻断异常]\n/ 承诺转在住占用
+Confirmed --> Cancelled : 顾客取消 / 合规的酒店原因处置\n/ 释放尚有效占用，保留真实原因
+CheckedIn --> CheckedOut : 所属工作人员登记实际退房\n/ 早于释放边界的间夜转已消费，其余转已释放
+Confirmed : 改订为状态内版本更新，不新建确认期限
+Confirmed : 同酒店、最新版本、同意有效报价、全部日期可用
+Confirmed : 任一校验失败：原单与旧占用保持不变
+note right of Pending
+  所有相关读写先按服务器当前时刻处理过期
+  截止时刻起只能认定超时，不允许抢先接受/取消
+  后台任务延迟不延长确认资格
+end note
+note bottom of Cancelled
+  酒店原因取消须有联系记录；联系失败保持原单
+  未到店处置须由工作人员联系后登记
+  不记为顾客主动取消，不执行线上退款
+end note
+note bottom of CheckedOut
+  退房日12:00前：释放当日起的未住宿夜晚
+  12:00整起：释放次日起的未住宿夜晚
+  仅处理原区间；原报价保留，不自动延住
+end note
+legend bottom
+  四个终态：已退房、已取消、已拒绝、已超时
+  禁止复活；重试只读取当前结果，不生成新转换
+  逾期提示、异常进度均不是新增订单状态
+endlegend
+@enduml
+

@@ -1,0 +1,131 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+hide empty members
+
+' requirements: REQ-001 REQ-002 REQ-012 REQ-013 REQ-015 REQ-016 REQ-019 REQ-020
+title 类图（二）｜身份、联系方式与异常处置
+left to right direction
+class "账户\nAccount" as Account {
+  +id: ID
+  +role: CUSTOMER / STAFF / ADMIN
+  +hotelId: ID?
+  +enabled: bool
+  +passwordHash: string
+}
+class "会话\nSession" as Session {
+  +idHash: string
+  +accountId: ID
+  +expiresAt / revokedAt: Instant?
+  +isActive(now): bool
+}
+class "权限策略\nAccessPolicy" as Policy <<service>> {
+  +authorize(actor, action, resource)
+  +canRevealContact(actor, order, incident)
+}
+class "订单（引用）\nBooking" as Booking {
+  +id / customerId / hotelId: ID
+  +status: BookingStatus
+  +terminalAt: Instant?
+}
+class "订单联系方式\nBookingContact" as Contact {
+  +contactName: string?
+  +fullPhone: string?
+  +phoneTail4: string
+  +erasedAt: Instant?
+  +revealIfAllowed(now, policy)
+  +eraseExpired(now)
+}
+class "异常事件\nIncident" as Incident {
+  +id / hotelId: ID
+  +reason: string
+  +affectedRoomDates: Set
+  +status: OPEN / CLOSED
+  +canClose(): bool
+}
+class "受影响订单处置项\nIncidentItem" as Item {
+  +progress: 待处理 / 联系中 / 已处理
+  +resolution: string?
+  +resolvedAt: Instant?
+}
+class "联系记录\nContactAttempt" as Attempt {
+  +contactedAt: Instant
+  +operatorId: ID
+  +outcome: string
+  +maskedSummary: string
+}
+class "追加式审计记录\nAuditEntry" as Audit {
+  +id / actorId: ID
+  +hotelId / objectId: ID?
+  +action / outcome / reason: string
+  +occurredAt: Instant
+  +maskedBeforeAfter: string
+}
+class "异常处置服务\nIncidentService" as IncidentService <<service>> {
+  +openAndStopSale(scope, reason)
+  +resolveItem(item, action, key)
+}
+Account "1" -- "0..*" Session
+Account "1" -- "0..*" Booking : 顾客所有者
+Booking "1" *-- "1" Contact
+Incident "1" *-- "0..*" Item
+Item "0..*" --> "1" Booking
+Item "1" *-- "0..*" Attempt
+Account "1" <-- "0..*" Attempt : 操作人
+Policy ..> Account
+Policy ..> Session
+Policy ..> Booking
+Policy ..> Incident
+Policy ..> Contact
+IncidentService ..> Policy
+IncidentService ..> Incident
+IncidentService ..> Audit
+note top of Account
+  工作人员恰好绑定一家酒店；其他角色不自授权限
+  管理员初始身份由部署初始化
+  每次受保护操作复核账户与会话有效性
+end note
+note bottom of Contact
+  完整联系信息仅保存在这一处，不复制进旧版本或日志
+  终态后严格少于7天才可经权限校验读取
+  7天整起立即拒读；任务可稍后物理清理
+  清理姓名和完整号码，保留尾号与账户关联
+end note
+note bottom of Item
+  唯一：异常事件＋订单
+  处置进度不替代订单状态；联系失败保留原单
+  事件、停售和影响清单在同一酒店事务中建立
+end note
+note bottom of Audit
+  成功业务变更与成功日志同事务
+  拒绝结果记录真实原因；不伪造成功事件
+  无密码、联系人姓名、完整号码或请求体
+  顾客只读取自身订单的业务历史投影
+end note
+note top of Policy
+  工作人员：所属酒店＋联系用途
+  管理员：职责范围＋关联异常事件
+  终态7天期限同时约束顾客、工作人员、管理员
+end note
+@enduml
+

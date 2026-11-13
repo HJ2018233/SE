@@ -1,0 +1,78 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+
+' requirements: REQ-001 REQ-003 REQ-005 REQ-007 REQ-009 REQ-013 REQ-015 REQ-016 REQ-017
+title 时序图（二）｜同酒店改订与原单保障
+autonumber
+actor 顾客 as User
+participant "Tauri 客户端" as Client
+participant "API / 权限策略" as API
+participant "订单服务" as Booking
+database "同一事务数据库" as DB
+User -> Client : 修改本人已确认订单
+Client -> API : 请求新方案报价（原订单编号＋版本）
+API -> Booking : 授权后计算差异与新报价
+Booking -> DB : 读取原单与方案；价格变化方案读取当前逐晚价
+Booking --> Client : 新旧方案与逐晚报价、原版本号
+note over Client, DB
+  日期/房型/间数变化：全单按当前价格重新报价
+  仅人数/联系人变化：容量校验，沿用原报价
+  查看改订报价不释放原单占用
+end note
+User -> Client : 同意方案与需要重报的价格
+Client -> API : 改订命令＋接受的报价＋原版本＋新操作标识
+API -> API : 复核会话、所有者与酒店范围
+API -> Booking : changePlan(command, quote, key)
+Booking -> DB : BEGIN；取得幂等记录；已处理则校验后查回
+Booking -> DB : 首次处理：锁定酒店行；清理该酒店过期预占
+Booking -> DB : 重读原单，核对已确认、原版本、异常范围
+alt 输入与当前方案完全相同
+  Booking -> DB : 保存无变更结果；COMMIT
+  Booking --> Client : 当前方案；不增版本、不添成功变更事件
+else 方案存在变更
+  alt 日期/房型/间数变化
+    Booking -> DB : 检查新日期/当日18:00截止、可售与全段房量
+    Booking -> DB : 同房型重叠日抵扣本单原占用后核验
+    Booking -> DB : 核对当前逐晚价与顾客同意的报价
+  else 仅人数/联系人变化
+    Booking -> DB : 校验容量/联系信息，不重报价或套用创建截止
+  end
+  alt 所有业务校验通过
+    Booking -> DB : 保存新版本与价格快照；更新当前方案
+    Booking -> DB : 同事务释放移出日期、更新重叠日、增加新增日
+    Booking -> DB : 更新有效业务唯一键；保存结果与脱敏成功日志
+    Booking -> DB : COMMIT
+    Booking --> Client : 原订单编号、新版本、仍为已确认
+  else 报价/版本/库存/重复/范围等冲突
+    Booking -> DB : 不写本次新方案；保存拒绝结果与日志；COMMIT
+    Booking --> Client : 原单当前状态＋具体冲突，必要时重新报价
+  end
+end
+note over Booking, DB
+  不支持跨酒店改订、待确认改订或已入住改订
+  改订成功保持订单编号与状态，不重启15分钟计时
+  技术中断：全部业务更新回滚，原单和旧占用仍完整
+end note
+@enduml
+

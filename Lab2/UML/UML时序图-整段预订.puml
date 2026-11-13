@@ -1,0 +1,92 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+
+' requirements: REQ-001 REQ-003 REQ-004 REQ-005 REQ-006 REQ-007 REQ-008 REQ-013 REQ-015 REQ-016 REQ-017 REQ-019 REQ-020
+title 时序图（一）｜整段预订、报价核对与结果查回
+autonumber
+actor 顾客 as User
+participant "Tauri 客户端" as Client
+participant "API / 权限策略" as API
+participant "订单服务" as Booking
+database "同一事务数据库" as DB
+User -> Client : 确认逐晚报价并提交
+Client -> API : 创建命令＋已确认报价＋操作标识
+API -> API : 身份、有效会话、顾客范围、输入校验
+API -> Booking : create(command, quote, key)
+Booking -> DB : BEGIN；取得操作者＋标识的幂等记录
+note over Booking, DB
+  同标识并发由唯一键与事务等待协调
+  摘要覆盖动作与全部规范化输入（含联系方式）
+  仅保存带密钥摘要，不保存请求原文
+end note
+alt 标识已有已提交结果
+  Booking -> DB : 校验动作/输入摘要
+  alt 摘要一致
+    Booking -> DB : 若有关联订单，取酒店锁、处理到期，再读最新状态
+    Booking -> DB : COMMIT（只读重试）
+    Booking --> API : 原订单编号＋当前状态
+  else 同标识不同输入
+    Booking -> DB : 记录脱敏拒绝日志；COMMIT
+    Booking --> API : 标识冲突，请使用正确操作标识
+  end
+else 首次处理
+  Booking -> DB : 锁定所属酒店行；取锁后读取服务器当前时刻
+  Booking -> DB : 先将该酒店到期预占转超时并释放，追加日志
+  Booking -> DB : 重核营业/房型、日期容量、重复有效订单
+  Booking -> DB : 读取所有住宿日价格、可售量与停售状态
+  alt 业务校验通过且逐晚价格匹配
+    Booking -> DB : 保存待确认订单、版本、逐晚价格及全部预占
+    Booking -> DB : 保存操作结果与成功日志；COMMIT
+    note right of DB
+      订单/间夜/版本/结果/成功日志一起生效
+      确认截止＝成功创建时刻＋15分钟
+    end note
+    Booking --> API : 订单编号、逐晚价格、总额、确认截止
+  else 报价已变化
+    Booking -> DB : 保存拒绝结果与脱敏日志；COMMIT
+    Booking --> API : 新旧逐晚报价；本次未建单
+    API --> Client : 要求重新核对并同意新报价
+    note right of Client
+      重新确认是新业务尝试，使用新操作标识
+      单纯找回本次结果继续使用原标识
+    end note
+  else 缺房 / 停售 / 重复 / 其他业务拒绝
+    Booking -> DB : 保存拒绝结果与脱敏日志；COMMIT
+    Booking --> API : 具体原因或已有订单的当前状态
+  end
+end
+API --> Client : 返回当前结果
+opt 响应丢失或客户端不确定
+  Client -> API : 用相同操作标识重试 / 查询结果
+  API -> Booking : 重新授权后查回持久结果
+  Booking -> DB : 读取操作结果；有关联订单则加锁、处理到期、读最新状态
+  Booking --> Client : 原订单当前状态；不重复占房
+end
+note over Booking, DB
+  技术错误或进程在提交前中断：整笔回滚，可同标识重试
+  业务拒绝可提交真实的旧订单到期清理，但不创建本次订单
+  提交成功而响应前中断：持久结果仍可找回
+end note
+@enduml
+

@@ -1,0 +1,22 @@
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+

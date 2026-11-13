@@ -1,0 +1,88 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+
+' requirements: REQ-001 REQ-002 REQ-003 REQ-004 REQ-005 REQ-006 REQ-007 REQ-008 REQ-009 REQ-010 REQ-011 REQ-012 REQ-013 REQ-014 REQ-015 REQ-016 REQ-019 REQ-020 REQ-021 REQ-022
+title 用例图｜三类用户与系统维护职责
+left to right direction
+actor "顾客" as Customer
+actor "酒店工作人员" as Staff
+actor "平台管理员" as Admin
+actor "时钟 / 恢复启动" as Clock
+rectangle "酒店预订系统" {
+  package "顾客功能" {
+    usecase "注册、登录" as C1
+    usecase "查询可订房源\n查看逐晚报价" as C2
+    usecase "创建整段预订" as C3
+    usecase "改订或取消本人订单" as C4
+    usecase "查看本人订单与处理记录" as C5
+  }
+  package "酒店工作" {
+    usecase "维护酒店与房型资料" as S1
+    usecase "维护逐日房量、价格与停售" as S2
+    usecase "确认或拒绝待确认订单" as S3
+    usecase "办理入住与退房" as S4
+    usecase "登记异常、联系与逐单处置" as S5
+    usecase "查询经营统计、导出明细" as S6
+    usecase "查阅本酒店日志\n按用途联系顾客" as S7
+  }
+  package "平台管理" {
+    usecase "创建和启停酒店\n管理工作人员归属与停用" as A1
+    usecase "调查授权范围内的异常\n查阅相关订单、统计与日志" as A2
+  }
+  package "维护" {
+    usecase "超时释放、到期清理\n恢复后校验再开放访问" as J1
+  }
+}
+Customer --> C1
+Customer --> C2
+Customer --> C3
+Customer --> C4
+Customer --> C5
+Staff --> S1
+Staff --> S2
+Staff --> S3
+Staff --> S4
+Staff --> S5
+Staff --> S6
+Staff --> S7
+Admin --> A1
+Admin --> A2
+Admin --> S5
+Clock --> J1
+note bottom of C3
+  提交与改订核对报价；变化须顾客重新同意
+  查询不占房；相同操作重试只得到一份结果
+end note
+note right of S7
+  工作人员仅所属酒店；管理员按调查授权
+  完整号码查看需用途/异常关联并留痕
+  所有人均受终态后7天读取期限限制
+end note
+note right of A1
+  首次管理员由部署初始化
+  管理员不代顾客改订，不绕过业务前置条件
+  线上支付、退款、具体房号、证件采集不在范围
+end note
+@enduml
+

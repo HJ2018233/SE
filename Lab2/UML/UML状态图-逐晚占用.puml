@@ -1,0 +1,66 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+
+' requirements: REQ-003 REQ-005 REQ-006 REQ-008 REQ-009 REQ-010 REQ-011 REQ-014 REQ-017
+title 状态图（二）｜逐晚占用与统计口径
+top to bottom direction
+state "预占\nReserved" as Reserved
+state "承诺\nCommitted" as Committed
+state "在住占用\nInHouse" as InHouse
+state "已消费\nConsumed" as Consumed
+state "已释放\nReleased" as Released
+[*] --> Reserved : 创建待确认订单
+[*] --> Committed : 已确认订单改订\n新增加的日期
+Reserved --> Committed : 接受待确认订单
+Reserved --> Released : 取消 / 拒绝 / 超时
+Committed --> InHouse : 办理入住
+Committed --> Released : 确认后取消\n或改订移出该日期
+Released --> Committed : 已确认订单合法改订再次覆盖该日\n/ 原子重算当前占用，保留历史
+InHouse --> Consumed : 退房结转\n[住宿日 < 释放起始日]
+InHouse --> Released : 提前退房\n[住宿日 >= 释放起始日]
+Committed : 改订重叠日：核验后原子调整数量/房型/价格引用
+Committed : 原单占用可抵扣；不重复建立同订单同日记录
+note bottom of Reserved
+  有效占用包含：预占、承诺、在住占用、已消费
+  可用量＝总量－四类占用；停售/停用时可订量为0
+  预占不计有效间夜约定金额
+end note
+note bottom of Consumed
+  已消费是占用终态，历史日期不可再销售
+  不得将已消费转已释放
+  承诺、在住占用、已消费计有效间夜约定金额
+end note
+note bottom of Released
+  已释放不计占用或有效间夜约定金额
+  后续合法改订再次覆盖该日期时，
+  在新方案事务内重算此唯一记录的当前占用
+  历史价格与变更记录继续保留
+end note
+note top of InHouse
+  提前退房释放起始日（北京时间）：
+  当日12:00前取当日，12:00整起取次日
+  与原住宿区间求交，不创建区间外间夜
+end note
+@enduml
+

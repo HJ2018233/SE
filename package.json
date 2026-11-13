@@ -1,0 +1,31 @@
+{
+  "name": "hotel-booking-system",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 5173",
+    "check": "tsc --noEmit",
+    "test:ui": "PLAYWRIGHT_BROWSERS_PATH=.local/browsers playwright test",
+    "browser:install": "PLAYWRIGHT_BROWSERS_PATH=.local/browsers playwright install chromium --only-shell",
+    "screenshots": "node tools/capture-ui.mjs"
+  },
+  "dependencies": {
+    "@fluentui/react-components": "9.75.2",
+    "@fluentui/react-icons": "2.0.345",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.65.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "prettier": "3.10.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.8"
+  }
+}

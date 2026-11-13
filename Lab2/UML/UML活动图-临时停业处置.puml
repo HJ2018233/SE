@@ -1,0 +1,83 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+
+' requirements: REQ-001 REQ-003 REQ-008 REQ-010 REQ-011 REQ-012 REQ-013 REQ-015 REQ-017
+title 活动图｜临时停业与真实无房的逐单处置
+start
+:工作人员或管理员填写异常原因、房型及日期范围;
+:校验角色和酒店/调查授权;
+if (授权及范围有效？) then (是)
+  :进入酒店事务，按当前时刻处理已到期预占;
+  :原子登记异常事件、受影响清单并停售;
+  :提交事件与停售，阻止新单和进入影响范围的确认/入住/改订;
+else (否)
+  :拒绝并记录脱敏失败日志;
+  stop
+endif
+while (本轮还有尚未检查的处置项？) is (是)
+  :选取本轮尚未检查的一项，先处理到期再读订单最新状态;
+  if (仍为未到期的待确认？) then (是)
+    :在酒店事务中按酒店原因拒绝，释放全部预占并留痕;
+    :处置项记已处理;
+  else (否)
+    if (仍为已确认？) then (是)
+      :联系顾客，记录时间、结果与处理说明;
+      if (联系记录齐备且可完成处置？) then (是)
+        :复核最新状态，在酒店事务中按酒店原因取消并释放;
+        :成功处置后记已处理；状态变化则按新状态重评;
+      else (否)
+        :保持原单与全部占用，处置项记联系中;
+        :顾客详情显示异常，等待后续联系;
+      endif
+    else (否)
+      if (仍为已入住？) then (是)
+        :登记线下安置和联系结果，保持在住及占用;
+        if (已经实际退房？) then (是)
+          :按实际退房时刻结转消费/释放，保存结果及日志;
+          :处置项记已处理;
+        else (否)
+          :保持联系中，继续等待线下处理;
+        endif
+      else (已结束)
+        :关联说明并保留原终态，包括自然超时原因;
+        :处置项记已处理，不重复释放;
+      endif
+    endif
+  endif
+endwhile (否)
+if (清单已全部处理？) then (是)
+  :关闭异常事件并追加日志;
+  :停售解除另行授权维护，不因事件关闭自动恢复销售;
+else (否)
+  :保留未完成进度与事件开放状态，后续恢复处理;
+endif
+stop
+note right
+  每个处置动作复核当前状态、权限与操作标识
+  状态/库存/处置结果/成功日志同事务
+  不自动换店、换房、退款或伪记顾客主动取消
+  普通停售仅阻止新单，与真实履约异常分开
+end note
+@enduml
+

@@ -1,0 +1,68 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+
+' requirements: REQ-003 REQ-007 REQ-008 REQ-010 REQ-013 REQ-015 REQ-017
+title 时序图（三）｜确认与超时使用同一时刻与互斥规则
+autonumber
+actor "酒店工作人员" as Staff
+participant "确认 API" as API
+participant "订单服务" as Booking
+participant "超时任务" as Job
+database "同一事务数据库" as DB
+Staff -> API : 接受待确认订单＋操作标识
+API -> API : 检查有效会话与所属酒店
+API -> Booking : accept(orderId, key)
+Booking -> DB : BEGIN；取得幂等记录
+Booking -> DB : 锁定酒店行（与任务相同的锁）
+Booking -> Booking : 获锁后读取服务器当前时刻 now
+Booking -> DB : 重读订单；先处理 now 已到期的预占
+alt now >= 确认截止 且订单原为待确认
+  Booking -> DB : 待确认→已超时；逐晚释放；超时成功日志
+  Booking -> DB : 保存本次确认被拒结果与日志；COMMIT
+  Booking --> Staff : 已超时；不得确认
+else now < 确认截止 且仍待确认、无履约异常
+  Booking -> DB : 待确认→已确认；预占→承诺（不加占用）
+  Booking -> DB : 保存确认结果与成功日志；COMMIT
+  Booking --> Staff : 已确认
+else 已取消 / 已拒绝 / 已确认 / 其他不符条件
+  Booking -> DB : 保存拒绝或合规重试结果；COMMIT
+  Booking --> Staff : 返回最新状态，不恢复旧状态
+end
+Job -> Booking : 扫描待确认且已到期的候选订单
+Booking -> DB : BEGIN；按同一规则锁定酒店行
+Booking -> Booking : 重新读取当前时刻（不复用扫描时间）
+Booking -> DB : 重读状态及截止
+alt 仍待确认且已到期
+  Booking -> DB : 转超时、释放一次、追加成功日志；COMMIT
+else 已由确认 / 取消 / 其他任务处理
+  Booking -> DB : COMMIT（不重复释放）
+end
+note over API, DB
+  图中为确认请求先获得锁；任务先获锁时也重读状态
+  截止时刻起，以超时规则优先裁决
+  请求排队前的客户端时间或服务器时间不作为最终判断
+  库存/订单相关查询同样先完成触及范围的到期处理
+end note
+@enduml
+

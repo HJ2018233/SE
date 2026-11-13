@@ -1,0 +1,81 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+
+' requirements: REQ-001 REQ-002 REQ-003 REQ-004 REQ-005 REQ-006 REQ-007 REQ-008 REQ-009 REQ-010 REQ-011 REQ-012 REQ-013 REQ-014 REQ-015 REQ-016 REQ-017 REQ-018 REQ-019 REQ-020 REQ-021 REQ-022
+title 组件图｜共享客户端与 Go 模块化单体
+top to bottom direction
+package "客户端：同一应用，按角色提供功能" {
+  component "React + TypeScript\nFluent 界面" as UI
+  component "Tauri 平台适配\n会话存储 / 系统交互" as Native
+  component "API 客户端\n操作标识 / 进行中反馈 / 结果查回" as SDK
+  UI --> SDK
+  UI --> Native
+}
+package "Linux · Go 单体服务（一个部署单元）" {
+  component "HTTP API\n解析、校验、错误映射" as API
+  component "身份与权限\n账户 / 会话 / 酒店范围" as Auth
+  package "业务组件（共享事务上下文）" as Business {
+    component "酒店与日历\n资料、房型、价格、停售" as Catalog
+    component "查询与报价\n整段可订检查、逐晚报价" as Search
+    component "订单与履约\n预订、改订、取消、入住退房" as Booking
+    component "异常处置\n停售范围、影响清单、联系记录" as Incident
+    component "统计与导出\n一致时点、有效间夜金额" as Report
+    component "联系方式策略\n授权揭示、到期禁读与清理" as Privacy
+    Search --> Catalog : 报价与可售判断
+    Booking --> Catalog : 同事务库存调整
+    Incident --> Booking : 共用状态转换
+    Booking --> Privacy : 联系信息规则
+    Catalog -[hidden]right-> Report
+  }
+  component "审计\n脱敏追加日志、业务历史投影" as Audit
+  component "后台任务与恢复闸门\n超时、清理、开放前校验" as Jobs
+  component "持久化与事务\n酒店锁、幂等结果、唯一约束" as Persistence
+  API --> Auth
+  API --> Business : 分发业务请求
+  Business ..> Auth : 复核每次受保护操作
+  Business --> Audit : 业务结果与脱敏记录
+  Jobs --> Business : 通过共用服务处理到期/清理
+  Business --> Persistence : 仓储接口 / 原子事务
+  Auth --> Persistence
+  Audit --> Persistence
+}
+SDK --> API : HTTPS / JSON
+database "单一事务数据库\n产品建议 PostgreSQL（待确认）" as DB
+Persistence --> DB
+note right of Persistence
+  写操作在同一事务上下文中共享存储
+  状态、逐晚占用、版本、幂等结果、成功日志一起提交
+  统计与明细同一快照；失败日志不得含敏感原文
+end note
+note right of Auth
+  每次受保护调用检查角色＋资源范围
+  管理员也遵守业务状态和报价同意条件
+  图中模块均调用同一权限策略与审计接口
+end note
+note bottom of UI
+  顾客、工作人员、管理员均覆盖四个平台
+  具体布局延后确定；客户端不裁决库存和订单状态
+end note
+@enduml
+

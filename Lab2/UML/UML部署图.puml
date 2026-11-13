@@ -1,0 +1,84 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+
+' requirements: REQ-001 REQ-018 REQ-019 REQ-020 REQ-021 REQ-022
+title 部署图｜四平台客户端、Linux 服务与独立备份
+top to bottom direction
+node "用户设备" as Clients {
+  node "Windows 11" as Win {
+    artifact "Tauri 客户端\nWebView2" as WinApp
+  }
+  node "macOS" as Mac {
+    artifact "Tauri 客户端\nWKWebView" as MacApp
+  }
+  node "iPadOS" as Pad {
+    artifact "Tauri iOS 应用目标\niPad 布局 / WKWebView" as PadApp
+  }
+  node "Android" as Android {
+    artifact "Tauri 客户端\nAndroid WebView" as AndroidApp
+  }
+}
+Win -[hidden]right-> Mac
+Mac -[hidden]right-> Pad
+Pad -[hidden]right-> Android
+node "Linux 服务主机" as Linux {
+  node "HTTPS 入口\nTLS 终止方案待选" as Gateway
+  node "Go 服务进程" as Go {
+    artifact "酒店预订 API\n模块化单体" as App
+    artifact "后台任务\n超时 / 联系信息清理" as Jobs
+    artifact "就绪闸门\n恢复与完整性检查" as Ready
+  }
+  database "事务数据库\nPostgreSQL（建议，待确认）" as DB
+  artifact "受限业务数据卷" as Data
+  artifact "每日完整备份任务" as Backup
+}
+node "独立备份存储\n与业务数据磁盘隔离、限制访问" as Store {
+  artifact "完整备份\n保留份数待确认" as Snapshot
+}
+Clients --> Gateway : HTTPS / JSON
+Gateway --> App : 受控内部连接
+App --> DB
+Jobs --> DB
+Ready --> DB
+DB -- Data : 持久化
+Backup --> DB : 一致备份
+Backup --> Snapshot : 每日写入
+Snapshot ..> DB : 人工启动恢复
+note bottom of Go
+  读写入口开放前：处理过期订单、清理到期联系信息、
+  检查订单/间夜/唯一性/日志关联；通过后就绪
+  运行中仍在入口实时检查截止时间和读取期限
+end note
+note bottom of Store
+  目标恢复点损失不超过24小时，须核对成功备份时间
+  每日备份不等于已验证可恢复；需后续恢复演练
+  恢复保留原终态时间，不延长联系信息读取期限
+end note
+note bottom of Clients
+  三类角色均使用共享业务客户端
+  各平台构建与真机运行待后续验证
+  iPadOS 的构建与签名需在 macOS/Xcode 环境完成
+end note
+@enduml
+

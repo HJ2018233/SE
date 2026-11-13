@@ -1,0 +1,141 @@
+@startuml
+' 公共样式已内嵌，单文件可独立渲染。
+skinparam backgroundColor white
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam defaultFontSize 15
+skinparam titleFontSize 21
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #43556A
+skinparam LineColor #43556A
+skinparam classAttributeFontSize 13
+skinparam classBackgroundColor #F7F9FC
+skinparam classBorderColor #65778B
+skinparam packageBackgroundColor #F4F7FB
+skinparam packageBorderColor #94A1B0
+skinparam componentBackgroundColor #F4F7FB
+skinparam componentBorderColor #65778B
+skinparam noteBackgroundColor #FFF9E9
+skinparam noteBorderColor #B8A273
+skinparam noteFontSize 13
+skinparam sequenceMessageAlign center
+skinparam sequenceArrowThickness 1
+skinparam dpi 150
+hide empty members
+
+' requirements: REQ-002 REQ-003 REQ-004 REQ-005 REQ-006 REQ-007 REQ-009 REQ-014 REQ-017 REQ-022
+title 类图（一）｜订单、报价与逐晚库存
+left to right direction
+class "酒店\nHotel" as Hotel {
+  +id: ID
+  +enabled: bool
+}
+class "房型\nRoomType" as RoomType {
+  +id: ID
+  +name: string
+  +capacity: int
+  +enabled: bool
+}
+class "逐日日历\nDailyCalendar" as Calendar {
+  +stayDate: LocalDate
+  +total: int
+  +priceFen: int64
+  +stopSale: bool
+  +revision: int64
+  +available(occupied): int
+}
+class "订单\nBooking" as Booking {
+  +id: ID
+  +customerId: ID
+  +status: BookingStatus
+  +currentVersionNo: int
+  +confirmDeadline: Instant
+  +terminalAt: Instant?
+  +assertTransition(action, now)
+}
+class "订单版本\nBookingVersion" as Version {
+  +versionNo: int
+  +roomTypeId: ID
+  +checkIn / checkOut: LocalDate
+  +roomCount / guestCount: int
+  +currency: CNY
+  +totalFen: int64
+  +contactChanged: bool
+  +total(): int64
+}
+class "逐晚价格快照\nNightlyPrice" as Price {
+  +stayDate: LocalDate
+  +unitPriceFen: int64
+}
+class "逐晚占用\nNightAllocation" as Allocation {
+  +stayDate: LocalDate
+  +roomCount: int
+  +state: AllocationState
+  +quoteVersionNo: int
+  +isEffective(): bool
+  +releaseIfAllowed()
+}
+class "顾客确认的报价\nAcceptedQuote" as Quote <<value object>> {
+  +nightlyPrices: date -> int64
+  +roomCount: int
+  +totalFen: int64
+  +matches(currentPrices): bool
+}
+class "操作结果\nOperationRecord" as Operation {
+  +actorId / operationKey: string
+  +action / requestHash: string
+  +outcomeCode: string
+  +bookingId: ID?
+}
+class "订单服务\nBookingService" as Service <<service>> {
+  +create(command, quote, key)
+  +changePlan(command, quote, key)
+  +transition(action, key)
+}
+class "酒店事务协调器\nHotelTransaction" as Tx <<service>> {
+  +run(hotelIds, command)
+  +expireDueOrders(now)
+}
+Hotel "1" -- "0..*" RoomType : 归属
+RoomType "1" -- "0..*" Calendar : 可售日历
+Hotel "1" -- "0..*" Booking
+Booking "1" *-- "1..*" Version : 不覆盖旧版本
+Version "1" *-- "1..14" Price
+Booking "1" *-- "1..*" Allocation : 当前占用及释放记录
+Allocation "0..*" --> "1" Calendar : 房型＋住宿日
+Allocation "0..*" --> "1" Price : 引用该版本逐晚价格
+Booking "0..1" <-- "0..*" Operation : 指向业务对象
+Service ..> Quote : 核对
+Service ..> Tx : 委托原子事务
+Service ..> Booking
+Service ..> Operation
+note bottom of Calendar
+  唯一：房型＋住宿日
+  有效占用＝预占＋承诺＋在住占用＋已消费
+  0 ≤ 有效占用 ≤ total
+  停售或停用时，可预订量为 0
+end note
+note bottom of Version
+  唯一：订单＋版本号；价格唯一：版本＋住宿日
+  totalFen＝逐晚单间价之和 × roomCount
+  一单一家酒店、一种房型、1～3间、1～14晚
+  住宿日区间：[入住日, 离店日)
+end note
+note bottom of Allocation
+  唯一：订单＋住宿日；旧版本价格不重复计占用
+  改订时更新当前占用的房型、数量、价格引用
+  退出新方案的日期保留已释放记录
+end note
+note top of Operation
+  唯一：操作者＋操作标识；摘要包含动作
+  同标识异输入拒绝；重试返回关联订单最新状态
+  不保存完整请求体或联系人原文
+end note
+note top of Tx
+  建议：同一酒店的库存写入串行进入事务
+  多酒店读前清理按酒店ID升序取锁
+  到期处理先于库存判断；技术失败整笔回滚
+  业务拒绝可保存真实到期处理、拒绝结果及日志
+end note
+@enduml
+
