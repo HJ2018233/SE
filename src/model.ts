@@ -58,12 +58,14 @@ export type Order = {
   terminalAt?: number;
   phoneTail?: string;
   incident?: string;
+  occupancy?: Record<string, string>;
 };
 export type CalendarEntry = {
   total: number;
   price: number;
   stopped: boolean;
   version: number;
+  occupied?: number;
 };
 export type Incident = {
   id: string;
@@ -92,12 +94,14 @@ export type Audit = {
 };
 export type Account = {
   id: string;
+  username?: string;
   label: string;
   role: string;
   hotel: string;
   enabled: boolean;
 };
 export type DemoData = {
+  connected?: boolean;
   hotels: Hotel[];
   rooms: Room[];
   roomDetails?: Record<string, Partial<Room>>;
@@ -471,6 +475,8 @@ export function calendarEntry(
   date: string,
 ): CalendarEntry {
   const value = data.calendar[entryKey(hotel, room, date)];
+  if (data.connected) return value || { total: 0, price: 0, stopped: true, version: 0, occupied: 0 };
+
   return (
     value || {
       total: 12,
@@ -483,6 +489,7 @@ export function calendarEntry(
   );
 }
 export function nightState(order: Order, date: string) {
+  if (order.occupancy) return order.occupancy[date] || "已释放";
   if (order.status === "待确认")
     return order.deadline <= Date.now() ? "已释放" : "预占";
   if (order.status === "已确认") return "承诺";
@@ -517,6 +524,13 @@ export function occupied(
   date: string,
   exclude?: string,
 ) {
+  if (data.connected) {
+    const total = calendarEntry(data, hotel, room, date).occupied || 0;
+    const own = exclude && data.orders.find((o) =>
+      o.id === exclude && o.room === room && o.occupancy?.[date] === "承诺");
+    if (own && total) return Math.max(0, total - own.rooms);
+    return total;
+  }
   return data.orders
     .filter(
       (o) =>
@@ -539,7 +553,7 @@ export function incidentBlocked(
     (i) =>
       !i.closed &&
       i.hotel === hotel &&
-      i.room === room &&
+      (!i.room || i.room === room) &&
       i.start <= date &&
       date < i.end,
   );
@@ -552,6 +566,9 @@ export function available(
   exclude?: string,
 ) {
   const entry = calendarEntry(data, hotel, room, date);
+  if (data.connected && (date < TODAY || (date === TODAY && Date.now() >= Date.parse(`${TODAY}T18:00:00+08:00`)))) {
+    return 0;
+  }
   return entry.stopped ||
     incidentBlocked(data, hotel, room, date) ||
     !data.hotels.find((h) => h.id === hotel)?.enabled ||

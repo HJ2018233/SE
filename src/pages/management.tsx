@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Badge,
   Button,
@@ -12,6 +12,7 @@ import {
   OverlayDrawer,
   Select,
   Switch,
+  Spinner,
   Text,
   Textarea,
 } from "@fluentui/react-components";
@@ -25,6 +26,7 @@ import {
   Eye20Regular,
 } from "@fluentui/react-icons";
 import { useApp } from "../context";
+import { api, errorMessage, operationKey } from "../api";
 import {
   activeStatuses,
   hotelRooms,
@@ -66,7 +68,11 @@ import {
 } from "../components/shared";
 
 export function CalendarPage() {
-  const { data, update, audit, notify } = useApp();
+  const { data, update, audit, notify, staffHotel, connected, command } =
+    useApp();
+  const hotelName =
+    data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
+  const baseCalendar = useRef(data.calendar);
   const [start, setStart] = useState(initialConditions.start),
     [focused, setFocused] = useState(initialConditions.start);
   const [edit, setEdit] = useState<{ room: string; date: string } | null>(null);
@@ -78,16 +84,17 @@ export function CalendarPage() {
     [error, setError] = useState("");
   const week = days(start, addDays(start, 7));
   const open = (room: string, date: string) => {
-    const entry = calendarEntry(data, "qt", room, date);
+    const entry = calendarEntry(data, staffHotel, room, date);
+    baseCalendar.current = data.calendar;
     setEdit({ room, date });
     setEditStart(date);
     setEditEnd(addDays(date, 1));
     setAmount(String(entry.total));
-    setPrice(String(entry.price / 100));
-    setStopped(entry.stopped);
+    setPrice(entry.price ? String(entry.price / 100) : "");
+    setStopped(entry.version > 0 && entry.stopped);
     setError("");
   };
-  const save = () => {
+  const save = async () => {
     if (!edit) return;
     const dates = days(editStart, editEnd);
     if (
@@ -108,20 +115,43 @@ export function CalendarPage() {
       setError("房量须为非负整数，价格须大于零且最多保留两位小数。");
       return;
     }
+    if (connected) {
+      try {
+        await command({
+          action: "calendar",
+          hotel: staffHotel,
+          room: edit.room,
+          calendar: dates.map((date) => ({
+            date,
+            total: Number(amount),
+            price: Math.round(Number(price) * 100),
+            stopped,
+            version:
+              baseCalendar.current[entryKey(staffHotel, edit.room, date)]
+                ?.version || 0,
+          })),
+        });
+        setEdit(null);
+        notify("所选日期已一起保存。已有订单的价格快照保持不变。");
+      } catch (cause) {
+        setError(errorMessage(cause));
+      }
+      return;
+    }
     const conflict = dates.find(
-      (date) => occupied(data, "qt", edit.room, date) > Number(amount),
+      (date) => occupied(data, staffHotel, edit.room, date) > Number(amount),
     );
     if (conflict) {
       setError(
-        `${shortDate(conflict)}已有 ${occupied(data, "qt", edit.room, conflict)} 间有效占用，拟设总量不足；整批未保存。实际无法履约请先登记异常。`,
+        `${shortDate(conflict)}已有 ${occupied(data, staffHotel, edit.room, conflict)} 间有效占用，拟设总量不足；整批未保存。实际无法履约请先登记异常。`,
       );
       return;
     }
     update((current) => {
       const calendar = { ...current.calendar };
       for (const date of dates) {
-        const prior = calendarEntry(current, "qt", edit.room, date);
-        calendar[entryKey("qt", edit.room, date)] = {
+        const prior = calendarEntry(current, staffHotel, edit.room, date);
+        calendar[entryKey(staffHotel, edit.room, date)] = {
           total: Number(amount),
           price: Math.round(Number(price) * 100),
           stopped,
@@ -132,16 +162,16 @@ export function CalendarPage() {
     });
     audit(
       "更新房量价格日历",
-      `qt/${edit.room}`,
+      `${staffHotel}/${edit.room}`,
       `${editStart} 至 ${editEnd}（不含）；${dates.length} 个住宿日；总量 ${amount}；${stopped ? "普通停售" : "可售"}`,
     );
     setEdit(null);
     notify("所选日期已一起保存。已有订单的价格快照保持不变。");
   };
   const cell = (room: Room, date: string) => {
-    const entry = calendarEntry(data, "qt", room.id, date),
-      used = occupied(data, "qt", room.id, date),
-      sellable = available(data, "qt", room.id, date);
+    const entry = calendarEntry(data, staffHotel, room.id, date),
+      used = occupied(data, staffHotel, room.id, date),
+      sellable = available(data, staffHotel, room.id, date);
     return (
       <Button
         key={`${room.id}-${date}`}
@@ -173,7 +203,10 @@ export function CalendarPage() {
   return (
     <>
       <div className="workspace-intro">
-        <Heading eyebrow="秦淮 · 栖庭 / 酒店工作台" title="把每一晚，安排妥当">
+        <Heading
+          eyebrow={`${hotelName} / 酒店工作台`}
+          title="把每一晚，安排妥当"
+        >
           在同一张日历中维护房量、价格和停售，点选住宿日即可编辑。
         </Heading>
         <div className="workspace-note">
@@ -209,7 +242,7 @@ export function CalendarPage() {
         </div>
         <Button
           icon={<Edit20Regular />}
-          onClick={() => open(hotelRooms(data, "qt")[0].id, start)}
+          onClick={() => open(hotelRooms(data, staffHotel)[0].id, start)}
         >
           批量维护日期
         </Button>
@@ -222,7 +255,7 @@ export function CalendarPage() {
             <p className="muted">{weekday(date)}</p>
           </div>
         ))}
-        {hotelRooms(data, "qt").map((room) => (
+        {hotelRooms(data, staffHotel).map((room) => (
           <div style={{ display: "contents" }} key={room.id}>
             <div className="calendar-room">
               <Text weight="semibold">{room.name}</Text>
@@ -244,8 +277,8 @@ export function CalendarPage() {
             ))}
           </Select>
         </Field>
-        {hotelRooms(data, "qt").map((room) => {
-          const entry = calendarEntry(data, "qt", room.id, focused);
+        {hotelRooms(data, staffHotel).map((room) => {
+          const entry = calendarEntry(data, staffHotel, room.id, focused);
           return (
             <article className="room-edit-row" key={room.id}>
               <div>
@@ -256,9 +289,9 @@ export function CalendarPage() {
                   <Price value={entry.price} />
                 </p>
                 <p className="muted">
-                  可订 {available(data, "qt", room.id, focused)} · 剩余{" "}
-                  {entry.total - occupied(data, "qt", room.id, focused)} · 总量{" "}
-                  {entry.total}
+                  可订 {available(data, staffHotel, room.id, focused)} · 剩余{" "}
+                  {entry.total - occupied(data, staffHotel, room.id, focused)} ·
+                  总量 {entry.total}
                 </p>
               </div>
               <Button onClick={() => open(room.id, focused)}>编辑</Button>
@@ -280,8 +313,8 @@ export function CalendarPage() {
         onConfirm={save}
       >
         <p className="muted space-top">
-          {hotelRooms(data, "qt").find((r) => r.id === edit?.room)?.name} ·
-          已有订单报价保持不变。
+          {hotelRooms(data, staffHotel).find((r) => r.id === edit?.room)?.name}{" "}
+          · 已有订单报价保持不变。
         </p>
         <div className="form-grid space-top">
           <Field label="住宿日起">
@@ -336,17 +369,23 @@ export function CalendarPage() {
 function OrderInspector({
   order,
   readOnly = false,
+  incidentId,
 }: {
   order: Order;
   readOnly?: boolean;
+  incidentId?: string;
 }) {
-  const { data, update, audit, notify, role } = useApp();
+  const { data, update, audit, notify, role, connected, command } = useApp();
   const [action, setAction] = useState<OrderStatus | null>(null),
     [reason, setReason] = useState(""),
     [error, setError] = useState(""),
     [contactOpen, setContactOpen] = useState(false),
     [purpose, setPurpose] = useState(""),
     [revealed, setRevealed] = useState(false);
+  const [fullPhone, setFullPhone] = useState("");
+  const retry = useRef({ input: "", key: "" });
+  const [busy, setBusy] = useState(false);
+  const related = incidentId || order.incident;
   const hotel = data.hotels.find((h) => h.id === order.hotel)!,
     room = hotelRoom(data, order.hotel, order.room);
   const blocked = Boolean(
@@ -357,10 +396,37 @@ function OrderInspector({
     canCheckin =
       now >= Date.parse(`${order.start}T14:00:00+08:00`) &&
       now < Date.parse(`${order.end}T12:00:00+08:00`);
-  const expiredPrivacy = !order.phone;
-  const transition = (status: OrderStatus) => {
+  const expiredPrivacy = connected
+    ? Boolean(order.terminalAt && now >= order.terminalAt + 7 * 86400000)
+    : !order.phone;
+  const transition = async (status: OrderStatus) => {
+    if (busy) return;
     if ((status === "已拒绝" || status === "已取消") && !reason.trim()) {
       setError("请填写处理原因。");
+      return;
+    }
+    if (connected) {
+      const input = JSON.stringify([status, reason]);
+      if (retry.current.input !== input)
+        retry.current = { input, key: operationKey() };
+      setBusy(true);
+      try {
+        await command({
+          action: "transition",
+          id: order.id,
+          mode: status,
+          note: reason,
+          key: retry.current.key,
+        });
+        setAction(null);
+        setReason("");
+        notify("处理结果已更新。");
+      } catch (cause) {
+        setError(errorMessage(cause));
+        if (!action) notify(errorMessage(cause), "error");
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     const permitted: Record<string, OrderStatus[]> = {
@@ -451,32 +517,38 @@ function OrderInspector({
         <div className="fact">
           <span className="fact-label">联系人</span>
           <div className="fact-value">
-            {revealed ? order.name : expiredPrivacy ? "已到期清理" : "按需查看"}
+            {revealed && !connected
+              ? order.name
+              : expiredPrivacy
+                ? "已到期清理"
+                : "按需查看"}
           </div>
         </div>
         <div className="fact">
           <span className="fact-label">联系手机</span>
           <div className="fact-value">
-            {revealed
-              ? order.phone
-              : expiredPrivacy
-                ? "完整信息已到期"
-                : `尾号 ${order.phone.slice(-4)}`}
+            {expiredPrivacy
+              ? "完整信息已到期"
+              : revealed
+                ? connected
+                  ? fullPhone
+                  : order.phone
+                : `尾号 ${order.phoneTail || order.phone?.slice(-4) || "—"}`}
           </div>
         </div>
       </div>
       <Button
         icon={<Eye20Regular />}
-        disabled={expiredPrivacy || (role === "admin" && !order.incident)}
+        disabled={expiredPrivacy || (role === "admin" && !related)}
         onClick={() => {
-          setPurpose("");
+          setPurpose(connected && role === "admin" ? "incident" : "");
           setError("");
           setContactOpen(true);
         }}
       >
         登记用途并查看联系方式
       </Button>
-      {role === "admin" && !order.incident && (
+      {role === "admin" && !related && (
         <Text size={200} className="muted">
           管理员仅可为已关联的异常调查查看完整联系方式。
         </Text>
@@ -499,13 +571,13 @@ function OrderInspector({
           ))}
         </ol>
       </section>
-      {!readOnly && !blocked && (
+      {!readOnly && (!blocked || (connected && order.status === "已入住")) && (
         <div className="stack">
           {order.status === "待确认" && (
             <div className="button-row">
               <Button
                 appearance="primary"
-                disabled={order.deadline <= now}
+                disabled={order.deadline <= now || busy}
                 onClick={() => transition("已确认")}
               >
                 确认接单
@@ -539,6 +611,18 @@ function OrderInspector({
                   前可办理；超出窗口请联系顾客并按实际情况处置。
                 </Text>
               )}
+              {connected &&
+                now >= Date.parse(`${order.end}T12:00:00+08:00`) && (
+                  <Button
+                    onClick={() => {
+                      setReason("");
+                      setError("");
+                      setAction("已取消");
+                    }}
+                  >
+                    登记未到店并取消
+                  </Button>
+                )}
             </>
           )}
           {order.status === "已入住" && (
@@ -557,11 +641,13 @@ function OrderInspector({
       <ConfirmDialog
         open={Boolean(action)}
         title={
-          action === "已拒绝"
-            ? "拒绝这笔预订"
-            : action === "已入住"
-              ? "确认办理入住"
-              : "确认实际退房"
+          action === "已取消"
+            ? "登记未到店并取消"
+            : action === "已拒绝"
+              ? "拒绝这笔预订"
+              : action === "已入住"
+                ? "确认办理入住"
+                : "确认实际退房"
         }
         confirm={
           action === "已退房"
@@ -571,7 +657,9 @@ function OrderInspector({
               : "提交拒绝结果"
         }
         onClose={() => setAction(null)}
-        onConfirm={() => action && transition(action)}
+        onConfirm={() => {
+          if (action) return transition(action);
+        }}
       >
         {action === "已拒绝" ? (
           <Field label="拒绝原因" required>
@@ -595,6 +683,7 @@ function OrderInspector({
                     {nightState(
                       {
                         ...order,
+                        occupancy: undefined,
                         status: "已退房",
                         checkout: new Date().toISOString(),
                       },
@@ -614,9 +703,25 @@ function OrderInspector({
         title="按用途查看联系方式"
         confirm="登记用途并查看"
         onClose={() => setContactOpen(false)}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!purpose.trim()) {
             setError("请填写具体的联系用途。");
+            return;
+          }
+          if (connected) {
+            try {
+              const value = await command({
+                action: "contact",
+                id: order.id,
+                note: purpose,
+                incident: related ? { id: related } : undefined,
+              });
+              setFullPhone(value.phone || "");
+              setRevealed(true);
+              setContactOpen(false);
+            } catch (cause) {
+              setError(errorMessage(cause));
+            }
             return;
           }
           setRevealed(true);
@@ -631,15 +736,28 @@ function OrderInspector({
         <p className="muted">
           本次查看会记录到操作日志。
           {role === "admin"
-            ? `关联异常：${order.incident}`
+            ? `关联异常：${related}`
             : "仅限所属酒店订单的确认与履约。"}
         </p>
         <Field label="查看用途" required className="space-top">
-          <Textarea
-            value={purpose}
-            onChange={(_, d) => setPurpose(d.value)}
-            placeholder="例如：联系顾客核实到店时间"
-          />
+          {connected ? (
+            <Select value={purpose} onChange={(_, d) => setPurpose(d.value)}>
+              <option value="">选择联系用途</option>
+              {role === "staff" && (
+                <>
+                  <option value="booking">预订确认</option>
+                  <option value="stay">入住与退房</option>
+                </>
+              )}
+              <option value="incident">履约异常调查</option>
+            </Select>
+          ) : (
+            <Textarea
+              value={purpose}
+              onChange={(_, d) => setPurpose(d.value)}
+              placeholder="例如：联系顾客核实到店时间"
+            />
+          )}
         </Field>
         {error && (
           <div className="space-top">
@@ -652,38 +770,77 @@ function OrderInspector({
 }
 
 export function StaffOrders() {
-  const { data } = useApp();
+  const { data, staffHotel, connected } = useApp();
+  const hotelName =
+    data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
   const [state, setState] = useState("all"),
     [room, setRoom] = useState("all"),
     [search, setSearch] = useState(""),
     [selected, setSelected] = useState("");
-  const orders = data.orders
-    .filter(
-      (o) =>
-        o.hotel === "qt" &&
-        (state === "all" || o.status === state) &&
-        (room === "all" || o.room === room) &&
-        o.id.toLowerCase().includes(search.toLowerCase()),
-    )
-    .sort(
-      (a, b) =>
-        Number(b.status === "待确认") - Number(a.status === "待确认") ||
-        b.created - a.created ||
-        a.id.localeCompare(b.id),
-    );
-  const current = data.orders.find(
-    (o) => o.id === selected && o.hotel === "qt",
-  );
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [remote, setRemote] = useState<Order[]>([]);
+  const [queryError, setQueryError] = useState("");
+  useEffect(() => setOffset(0), [start, end, room, state, search]);
+  useEffect(() => {
+    if (!connected) return;
+    let current = true;
+    void api
+      .orders({
+        room: room === "all" ? "" : room,
+        status: state === "all" ? "" : state,
+        start,
+        end,
+        search,
+        limit: 20,
+        offset,
+      })
+      .then((orders) => {
+        if (current) {
+          setRemote(orders);
+          setQueryError("");
+        }
+      })
+      .catch((cause) => {
+        if (current) {
+          setRemote([]);
+          setQueryError(errorMessage(cause));
+        }
+      });
+    return () => {
+      current = false;
+    };
+  }, [connected, start, end, room, state, search, offset, data.orders]);
+  const orders = connected
+    ? remote
+    : data.orders
+        .filter(
+          (o) =>
+            o.hotel === staffHotel &&
+            (state === "all" || o.status === state) &&
+            (room === "all" || o.room === room) &&
+            o.id.toLowerCase().includes(search.toLowerCase()),
+        )
+        .sort(
+          (a, b) =>
+            Number(b.status === "待确认") - Number(a.status === "待确认") ||
+            b.created - a.created ||
+            a.id.localeCompare(b.id),
+        );
+  const current =
+    (connected ? remote.find((o) => o.id === selected) : undefined) ||
+    data.orders.find((o) => o.id === selected && o.hotel === staffHotel);
   return (
     <>
       <Heading
-        eyebrow="秦淮 · 栖庭 / 订单处理"
+        eyebrow={`${hotelName} / 订单处理`}
         title="下一位客人，准备就绪"
         action={
           <Badge appearance="tint" color="warning">
             {
               data.orders.filter(
-                (o) => o.hotel === "qt" && o.status === "待确认",
+                (o) => o.hotel === staffHotel && o.status === "待确认",
               ).length
             }{" "}
             笔待确认
@@ -711,14 +868,33 @@ export function StaffOrders() {
         <Field label="房型">
           <Select value={room} onChange={(_, d) => setRoom(d.value)}>
             <option value="all">全部房型</option>
-            {hotelRooms(data, "qt").map((r) => (
+            {hotelRooms(data, staffHotel).map((r) => (
               <option value={r.id} key={r.id}>
                 {r.name}
               </option>
             ))}
           </Select>
         </Field>
+        {connected && (
+          <>
+            <Field label="入住日起">
+              <Input
+                type="date"
+                value={start}
+                onChange={(_, d) => setStart(d.value)}
+              />
+            </Field>
+            <Field label="入住日止（不含）">
+              <Input
+                type="date"
+                value={end}
+                onChange={(_, d) => setEnd(d.value)}
+              />
+            </Field>
+          </>
+        )}
       </div>
+      {queryError && <Notice intent="error">{queryError}</Notice>}
       {orders.length ? (
         <div className="table-wrap">
           <table>
@@ -739,8 +915,9 @@ export function StaffOrders() {
                     <div>{o.id}</div>
                     <Text size={200} className="muted">
                       {
-                        hotelRooms(data, "qt").find((r) => r.id === o.room)
-                          ?.name
+                        hotelRooms(data, staffHotel).find(
+                          (r) => r.id === o.room,
+                        )?.name
                       }
                     </Text>
                   </td>
@@ -773,9 +950,13 @@ export function StaffOrders() {
                     {money(total(o.nights, o.rooms))}
                   </td>
                   <td data-label="联系手机">
-                    {o.phone
-                      ? `尾号 ${o.phone.slice(-4)}`
-                      : `尾号 ${o.phoneTail || "—"} · 已清理`}
+                    {`尾号 ${o.phoneTail || o.phone?.slice(-4) || "—"}`}
+                    {(connected
+                      ? Boolean(
+                          o.terminalAt &&
+                          Date.now() >= o.terminalAt + 7 * 86400000,
+                        )
+                      : !o.phone) && " · 已到期"}
                   </td>
                   <td data-label="处理">
                     <Button onClick={() => setSelected(o.id)}>
@@ -789,6 +970,19 @@ export function StaffOrders() {
         </div>
       ) : (
         <Empty title="没有符合条件的订单">请调整状态、房型或订单编号。</Empty>
+      )}
+      {connected && (offset > 0 || orders.length === 20) && (
+        <div className="button-row space-top">
+          <Button disabled={!offset} onClick={() => setOffset(offset - 20)}>
+            上一页
+          </Button>
+          <Button
+            disabled={orders.length !== 20}
+            onClick={() => setOffset(offset + 20)}
+          >
+            下一页
+          </Button>
+        </div>
       )}
       <OverlayDrawer
         position="end"
@@ -820,13 +1014,14 @@ export function StaffOrders() {
 }
 
 export function HotelSettings() {
-  const { data, update, audit, notify } = useApp();
-  const hotel = data.hotels.find((h) => h.id === "qt")!;
+  const { data, update, audit, notify, staffHotel, connected, command } =
+    useApp();
+  const hotel = data.hotels.find((h) => h.id === staffHotel)!;
   const [draft, setDraft] = useState(hotel),
     [error, setError] = useState(""),
     [editRoom, setEditRoom] = useState<Room | null>(null),
     [roomError, setRoomError] = useState("");
-  const save = () => {
+  const save = async () => {
     if (
       ![draft.name, draft.city, draft.address, draft.phone].every((v) =>
         v.trim(),
@@ -835,10 +1030,25 @@ export function HotelSettings() {
       setError("酒店名称、城市、地址和联系电话均需填写。");
       return;
     }
+    if (connected) {
+      const { name, city, address, phone, description } = draft;
+      try {
+        await command({
+          action: "hotel",
+          hotel: staffHotel,
+          property: { name, city, address, phone, description },
+        });
+        setError("");
+        notify("酒店资料已保存。");
+      } catch (cause) {
+        setError(errorMessage(cause));
+      }
+      return;
+    }
     update((current) => ({
       ...current,
       hotels: current.hotels.map((h) =>
-        h.id === "qt"
+        h.id === staffHotel
           ? {
               ...h,
               name: draft.name.trim(),
@@ -850,13 +1060,13 @@ export function HotelSettings() {
       ),
     }));
     setError("");
-    audit("维护酒店资料", "qt", "更新名称、城市、地址或联系电话");
+    audit("维护酒店资料", staffHotel, "更新名称、城市、地址或联系电话");
     notify("酒店资料已保存。");
   };
   return (
     <>
       <Heading
-        eyebrow="秦淮 · 栖庭 / 酒店与房型"
+        eyebrow={`${hotel.name} / 酒店与房型`}
         title="让客人先读懂这家酒店"
         action={
           <Button
@@ -864,8 +1074,8 @@ export function HotelSettings() {
             onClick={() => {
               setRoomError("");
               setEditRoom({
-                id: `RM${Date.now()}`,
-                hotel: "qt",
+                id: connected ? "" : `RM${Date.now()}`,
+                hotel: staffHotel,
                 name: "",
                 price: 46800,
                 capacity: 2,
@@ -914,7 +1124,7 @@ export function HotelSettings() {
           <Text as="h2" size={500} weight="semibold">
             房型资料
           </Text>
-          {hotelRooms(data, "qt").map((r) => (
+          {hotelRooms(data, staffHotel).map((r) => (
             <article className="room-edit-row" key={r.id}>
               <div>
                 <div className="inline">
@@ -951,7 +1161,7 @@ export function HotelSettings() {
         title="编辑房型资料"
         confirm="保存房型"
         onClose={() => setEditRoom(null)}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!editRoom) return;
           if (
             !editRoom.name.trim() ||
@@ -961,8 +1171,25 @@ export function HotelSettings() {
             setRoomError("请填写房型名称，每间可住人数须为正整数。");
             return;
           }
+          if (connected) {
+            const { name, capacity, size, bed, description, enabled } =
+              editRoom;
+            try {
+              await command({
+                action: "room",
+                hotel: staffHotel,
+                room: editRoom.id,
+                roomType: { name, capacity, size, bed, description, enabled },
+              });
+              setEditRoom(null);
+              notify("房型资料已保存。");
+            } catch (cause) {
+              setRoomError(errorMessage(cause));
+            }
+            return;
+          }
           if (
-            hotelRooms(data, "qt").some(
+            hotelRooms(data, staffHotel).some(
               (r) =>
                 r.id !== editRoom.id &&
                 r.enabled &&
@@ -979,10 +1206,14 @@ export function HotelSettings() {
               : [...current.rooms, editRoom],
             roomDetails: {
               ...current.roomDetails,
-              [`qt/${editRoom.id}`]: editRoom,
+              [`${staffHotel}/${editRoom.id}`]: editRoom,
             },
           }));
-          audit("维护房型", `qt/${editRoom.id}`, "更新房型说明、容量或启停");
+          audit(
+            "维护房型",
+            `${staffHotel}/${editRoom.id}`,
+            "更新房型说明、容量或启停",
+          );
           setEditRoom(null);
           notify("房型资料已保存。");
         }}
@@ -1051,26 +1282,66 @@ export function HotelSettings() {
 }
 
 export function StatsPage() {
-  const { data, audit } = useApp();
+  const { data, audit, staffHotel, connected, command } = useApp();
+  const hotelName =
+    data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
+  const [loaded, setLoaded] = useState(!connected);
+  const [busy, setBusy] = useState(false);
   const [start, setStart] = useState(initialConditions.start),
     [end, setEnd] = useState(addDays(initialConditions.start, 7)),
     [room, setRoom] = useState("all"),
     [error, setError] = useState(""),
     [page, setPage] = useState(0);
   const [snapshot, setSnapshot] = useState(() => ({
-    ...statistics(data, "qt", start, end, room),
+    ...statistics(data, staffHotel, start, end, room),
     at: dateTime(),
     start,
     end,
     room,
   }));
-  const refresh = () => {
+  useEffect(() => {
+    if (!connected) return;
+    let current = true;
+    void api
+      .stats(
+        initialConditions.start,
+        addDays(initialConditions.start, 7),
+        "all",
+      )
+      .then((value) => {
+        if (current) {
+          setSnapshot(value);
+          setLoaded(true);
+        }
+      })
+      .catch((cause) => {
+        if (current) setError(errorMessage(cause));
+      });
+    return () => {
+      current = false;
+    };
+  }, [connected, staffHotel]);
+  const refresh = async () => {
     if (end <= start || days(start, end).length > 90) {
       setError("请选取连续 1 至 90 个住宿日，结束日期不含。");
       return;
     }
+    if (connected) {
+      setBusy(true);
+      try {
+        setSnapshot(await api.stats(start, end, room));
+        setLoaded(true);
+        setPage(0);
+        setError("");
+      } catch (cause) {
+        setError(errorMessage(cause));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     setSnapshot({
-      ...statistics(data, "qt", start, end, room),
+      ...statistics(data, staffHotel, start, end, room),
       at: dateTime(),
       start,
       end,
@@ -1079,8 +1350,16 @@ export function StatsPage() {
     setPage(0);
     setError("");
   };
-  const exportData = () => {
-    downloadCsv(`栖庭-有效间夜-${snapshot.start}.csv`, [
+  const exportData = async () => {
+    if (connected) {
+      try {
+        await command({ action: "stats_export", hotel: staffHotel });
+      } catch (cause) {
+        setError(errorMessage(cause));
+        return;
+      }
+    }
+    downloadCsv(`${hotelName}-有效间夜-${snapshot.start}.csv`, [
       [
         "统计时点",
         "酒店",
@@ -1098,7 +1377,7 @@ export function StatsPage() {
       ],
       ...snapshot.rows.map((row) => [
         snapshot.at,
-        "qt",
+        staffHotel,
         snapshot.start,
         snapshot.end,
         snapshot.room,
@@ -1112,12 +1391,14 @@ export function StatsPage() {
         (row.effective / 100).toFixed(2),
       ]),
     ]);
-    audit(
-      "导出统计",
-      "qt",
-      `同一快照 ${snapshot.at}；${snapshot.start} 至 ${snapshot.end}；${snapshot.rows.length} 行，无联系信息`,
-    );
+    if (!connected)
+      audit(
+        "导出统计",
+        staffHotel,
+        `同一快照 ${snapshot.at}；${snapshot.start} 至 ${snapshot.end}；${snapshot.rows.length} 行，无联系信息`,
+      );
   };
+  if (!loaded && !error) return <Spinner label="正在生成统计快照" />;
   const metrics = [
     ["总量", snapshot.total],
     ["预占", snapshot.held],
@@ -1131,10 +1412,14 @@ export function StatsPage() {
   return (
     <>
       <Heading
-        eyebrow="秦淮 · 栖庭 / 统计与导出"
+        eyebrow={`${hotelName} / 统计与导出`}
         title="每一个间夜，都有来处"
         action={
-          <Button icon={<ArrowDownload20Regular />} onClick={exportData}>
+          <Button
+            icon={<ArrowDownload20Regular />}
+            onClick={exportData}
+            disabled={!loaded || busy}
+          >
             导出这份快照 CSV
           </Button>
         }
@@ -1155,7 +1440,7 @@ export function StatsPage() {
         <Field label="房型">
           <Select value={room} onChange={(_, d) => setRoom(d.value)}>
             <option value="all">全部房型</option>
-            {hotelRooms(data, "qt").map((r) => (
+            {hotelRooms(data, staffHotel).map((r) => (
               <option key={r.id} value={r.id}>
                 {r.name}
               </option>
@@ -1172,7 +1457,8 @@ export function StatsPage() {
         {shortDate(snapshot.end)}（不含） ·{" "}
         {snapshot.room === "all"
           ? "全部房型"
-          : hotelRooms(data, "qt").find((r) => r.id === snapshot.room)?.name}
+          : hotelRooms(data, staffHotel).find((r) => r.id === snapshot.room)
+              ?.name}
       </p>
       <section className="summary-band" aria-label="房量与有效金额汇总">
         {metrics.map(([label, value]) => (
@@ -1230,7 +1516,7 @@ export function StatsPage() {
                         <td data-label="住宿日">{shortDate(row.date)}</td>
                         <td data-label="房型 / 间数">
                           {
-                            hotelRooms(data, "qt").find(
+                            hotelRooms(data, staffHotel).find(
                               (r) => r.id === row.room,
                             )?.name
                           }{" "}
@@ -1283,12 +1569,15 @@ function IncidentItem({
   item: Incident["items"][number];
   onView: (id: string) => void;
 }) {
-  const { data, update, audit } = useApp();
+  const { data, update, audit, connected, command } = useApp();
   const order = data.orders.find((o) => o.id === item.order)!;
   const [notes, setNotes] = useState(""),
     [contacted, setContacted] = useState(false),
     [error, setError] = useState("");
-  const save = (complete: boolean) => {
+  const [busy, setBusy] = useState(false);
+  if (!order) return <Notice>关联订单 {item.order}，请从订单详情查阅。</Notice>;
+  const save = async (complete: boolean) => {
+    if (busy) return;
     if (!notes.trim()) {
       setError("请填写联系或处理说明。");
       return;
@@ -1297,6 +1586,25 @@ function IncidentItem({
       setError(
         "已确认订单需先取得联系并登记事实；未联系上时保留原状态与占用。",
       );
+      return;
+    }
+    if (connected) {
+      setBusy(true);
+      try {
+        await command({
+          action: "incident_update",
+          id: incident.id,
+          incident: { id: item.order },
+          note: notes,
+          mode: complete ? (contacted ? "reached" : "complete") : "contacting",
+        });
+        setError("");
+        setNotes("");
+      } catch (cause) {
+        setError(errorMessage(cause));
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     const status: OrderStatus = !complete
@@ -1424,33 +1732,38 @@ function IncidentItem({
 }
 
 export function IncidentsPage() {
-  const { data, update, audit, notify, role } = useApp();
+  const { data, update, audit, notify, role, staffHotel, connected, command } =
+    useApp();
+  const hotelName =
+    data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
   const [selected, setSelected] = useState(data.incidents[0]?.id || ""),
     [create, setCreate] = useState(false),
     [viewOrder, setViewOrder] = useState("");
   const [title, setTitle] = useState(""),
     [reason, setReason] = useState(""),
-    [hotel, setHotel] = useState("qt"),
-    [room, setRoom] = useState("garden"),
+    [hotel, setHotel] = useState(
+      role === "staff" ? staffHotel : data.hotels[0]?.id || "",
+    ),
+    [room, setRoom] = useState(connected ? "" : "garden"),
     [start, setStart] = useState(initialConditions.start),
     [end, setEnd] = useState(initialConditions.end),
     [error, setError] = useState("");
   const incidents = data.incidents.filter(
-      (i) => role === "admin" || i.hotel === "qt",
+      (i) => role === "admin" || i.hotel === staffHotel,
     ),
     incident = incidents.find((i) => i.id === selected) || incidents[0];
   const current = data.orders.find(
-    (o) => o.id === viewOrder && (role === "admin" || o.hotel === "qt"),
+    (o) => o.id === viewOrder && (role === "admin" || o.hotel === staffHotel),
   );
   const affected = data.orders.filter(
     (o) =>
       o.hotel === hotel &&
-      o.room === room &&
+      (!room || o.room === room) &&
       o.start < end &&
       o.end > start &&
       activeStatuses.includes(o.status),
   );
-  const createIncident = () => {
+  const createIncident = async () => {
     if (
       !title.trim() ||
       !reason.trim() ||
@@ -1459,6 +1772,21 @@ export function IncidentsPage() {
       days(start, end).length > 90
     ) {
       setError("请填写异常标题、原因和有效日期范围（最多 90 个住宿日）。");
+      return;
+    }
+    if (connected) {
+      try {
+        const { id } = await command({
+          action: "incident_open",
+          hotel,
+          incident: { room, title, reason, start, end },
+        });
+        setCreate(false);
+        setSelected(id || "");
+        notify("影响范围已先停售，请继续逐单登记联系与处置结果。");
+      } catch (cause) {
+        setError(errorMessage(cause));
+      }
       return;
     }
     if (
@@ -1520,7 +1848,7 @@ export function IncidentsPage() {
   return (
     <>
       <Heading
-        eyebrow={`${role === "staff" ? "秦淮 · 栖庭" : "平台管理"} / 异常处置`}
+        eyebrow={`${role === "staff" ? hotelName : "平台管理"} / 异常处置`}
         title="把意外，一件件妥善处理"
         action={
           <Button
@@ -1586,7 +1914,9 @@ export function IncidentsPage() {
                   <span className="fact-label">酒店 / 房型</span>
                   <div className="fact-value">
                     {data.hotels.find((h) => h.id === incident.hotel)?.name} ·{" "}
-                    {hotelRoom(data, incident.hotel, incident.room)?.name}
+                    {incident.room
+                      ? hotelRoom(data, incident.hotel, incident.room)?.name
+                      : "全部房型"}
                   </div>
                 </div>
                 <div className="fact">
@@ -1620,7 +1950,19 @@ export function IncidentsPage() {
                   incident.closed ||
                   incident.items.some((i) => i.progress !== "已处理")
                 }
-                onClick={() => {
+                onClick={async () => {
+                  if (connected) {
+                    try {
+                      await command({
+                        action: "incident_close",
+                        id: incident.id,
+                      });
+                      notify("事件已完成。恢复销售前请在日历核对房量和停售。");
+                    } catch (cause) {
+                      notify(errorMessage(cause), "error");
+                    }
+                    return;
+                  }
                   update((current) => ({
                     ...current,
                     incidents: current.incidents.map((i) =>
@@ -1663,7 +2005,13 @@ export function IncidentsPage() {
           </Field>
           {role === "admin" && (
             <Field label="酒店" className="span-2">
-              <Select value={hotel} onChange={(_, d) => setHotel(d.value)}>
+              <Select
+                value={hotel}
+                onChange={(_, d) => {
+                  setHotel(d.value);
+                  setRoom(connected ? "" : "garden");
+                }}
+              >
                 {data.hotels.map((h) => (
                   <option key={h.id} value={h.id}>
                     {h.name}
@@ -1674,7 +2022,8 @@ export function IncidentsPage() {
           )}
           <Field label="影响房型" className="span-2">
             <Select value={room} onChange={(_, d) => setRoom(d.value)}>
-              {hotelRooms(data, "qt").map((r) => (
+              {connected && <option value="">全部房型</option>}
+              {hotelRooms(data, hotel).map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}
                 </option>
@@ -1725,7 +2074,12 @@ export function IncidentsPage() {
         </DrawerHeader>
         <DrawerBody>
           {current && (
-            <OrderInspector key={current.id} order={current} readOnly />
+            <OrderInspector
+              incidentId={incident?.id}
+              key={current.id}
+              order={current}
+              readOnly
+            />
           )}
         </DrawerBody>
       </OverlayDrawer>
@@ -1734,18 +2088,20 @@ export function IncidentsPage() {
 }
 
 export function AuditPage() {
-  const { data, role } = useApp();
+  const { data, role, staffHotel, connected } = useApp();
+  const hotelName =
+    data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
   const [object, setObject] = useState(""),
     [action, setAction] = useState("all"),
     [actor, setActor] = useState("all");
   const ownObject = (id: string) =>
-    id === "qt" ||
-    id.startsWith("qt/") ||
-    data.orders.some((o) => o.id === id && o.hotel === "qt") ||
-    data.incidents.some((i) => i.id === id && i.hotel === "qt");
+    id === staffHotel ||
+    id.startsWith(`${staffHotel}/`) ||
+    data.orders.some((o) => o.id === id && o.hotel === staffHotel) ||
+    data.incidents.some((i) => i.id === id && i.hotel === staffHotel);
   const logs = data.audit.filter(
     (log) =>
-      (role === "admin" || ownObject(log.object)) &&
+      (connected || role === "admin" || ownObject(log.object)) &&
       log.object.toLowerCase().includes(object.toLowerCase()) &&
       (action === "all" || log.action === action) &&
       (actor === "all" || log.role === actor),
@@ -1753,7 +2109,7 @@ export function AuditPage() {
   return (
     <>
       <Heading
-        eyebrow={`${role === "staff" ? "秦淮 · 栖庭" : "平台管理"} / 操作日志`}
+        eyebrow={`${role === "staff" ? hotelName : "平台管理"} / 操作日志`}
         title="让每一次处理，有迹可循"
       >
         按对象、动作和操作者查阅追加记录；日志不提供修改入口，不展示完整联系方式。
@@ -1815,7 +2171,7 @@ export function AuditPage() {
 }
 
 export function AdminHotels() {
-  const { data, update, audit, notify } = useApp();
+  const { data, update, audit, notify, connected, command } = useApp();
   const [toggle, setToggle] = useState<Hotel | null>(null),
     [create, setCreate] = useState(false),
     [draft, setDraft] = useState({
@@ -1825,9 +2181,20 @@ export function AdminHotels() {
       phone: "",
     }),
     [error, setError] = useState("");
-  const save = () => {
+  const save = async () => {
     if (!Object.values(draft).every((v) => v.trim())) {
       setError("请填写酒店名称、城市、地址和联系电话。");
+      return;
+    }
+    if (connected) {
+      try {
+        await command({ action: "hotel", property: draft });
+        setCreate(false);
+        setDraft({ name: "", city: "", address: "", phone: "" });
+        notify("酒店已创建，可为工作人员绑定所属酒店。");
+      } catch (cause) {
+        setError(errorMessage(cause));
+      }
       return;
     }
     const id = `HT${String(Date.now()).slice(-6)}`;
@@ -1903,8 +2270,22 @@ export function AdminHotels() {
         title={toggle?.enabled ? "停用这家酒店？" : "启用这家酒店？"}
         confirm={toggle?.enabled ? "确认停用" : "确认启用"}
         onClose={() => setToggle(null)}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!toggle) return;
+          if (connected) {
+            try {
+              await command({
+                action: "hotel_enabled",
+                hotel: toggle.id,
+                enabled: !toggle.enabled,
+              });
+              setToggle(null);
+              notify("酒店状态已更新。");
+            } catch (cause) {
+              notify(errorMessage(cause), "error");
+            }
+            return;
+          }
           update((current) => ({
             ...current,
             hotels: current.hotels.map((h) =>
@@ -1957,10 +2338,12 @@ export function AdminHotels() {
 }
 
 export function AdminAccounts() {
-  const { data, update, audit, notify } = useApp();
+  const { data, update, audit, notify, connected, command } = useApp();
   const [create, setCreate] = useState(false),
     [name, setName] = useState(""),
-    [hotel, setHotel] = useState("qt"),
+    [hotel, setHotel] = useState(connected ? data.hotels[0]?.id || "" : "qt"),
+    [username, setUsername] = useState(""),
+    [password, setPassword] = useState(""),
     [error, setError] = useState(""),
     [toggle, setToggle] = useState("");
   return (
@@ -1992,17 +2375,27 @@ export function AdminAccounts() {
         aria-label="管理账户列表"
       >
         {data.accounts.map((account) => (
-          <article className="account-row" role="listitem" key={account.id}>
+          <article
+            className="account-row"
+            role="listitem"
+            key={account.username || account.id}
+          >
             <div>
               <Text weight="semibold" size={400}>
                 {account.label}
               </Text>
               <Text className="muted" size={200}>
-                {account.id}
+                {account.username || account.id}
               </Text>
             </div>
             <div>
-              <Text>{account.role}</Text>
+              <Text>
+                {account.role === "admin"
+                  ? "平台管理员"
+                  : account.role === "staff"
+                    ? "酒店工作人员"
+                    : account.role}
+              </Text>
               <Badge
                 appearance="tint"
                 color={account.enabled ? "success" : "subtle"}
@@ -2021,10 +2414,10 @@ export function AdminAccounts() {
               </Text>
             </div>
             <Button
-              disabled={account.id === "AD001"}
+              disabled={account.role === "admin" || account.id === "AD001"}
               onClick={() => setToggle(account.id)}
             >
-              {account.id === "AD001"
+              {account.role === "admin" || account.id === "AD001"
                 ? "当前管理员"
                 : account.enabled
                   ? "停用账户"
@@ -2038,9 +2431,25 @@ export function AdminAccounts() {
         title="创建工作人员账户"
         confirm="创建并绑定酒店"
         onClose={() => setCreate(false)}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!name.trim() || !hotel) {
             setError("请填写账户名称并选择唯一所属酒店。");
+            return;
+          }
+          if (connected) {
+            try {
+              await command({
+                action: "staff_create",
+                user: { username, password, label: name, hotel },
+              });
+              setCreate(false);
+              setUsername("");
+              setPassword("");
+              setName("");
+              notify("工作人员账户与酒店归属已建立。");
+            } catch (cause) {
+              setError(errorMessage(cause));
+            }
             return;
           }
           const id = `ST${String(Date.now()).slice(-6)}`;
@@ -2071,6 +2480,25 @@ export function AdminAccounts() {
           <Field label="账户显示名称" required>
             <Input value={name} onChange={(_, d) => setName(d.value)} />
           </Field>
+          {connected && (
+            <>
+              <Field label="登录账户名" required>
+                <Input
+                  value={username}
+                  autoComplete="off"
+                  onChange={(_, d) => setUsername(d.value)}
+                />
+              </Field>
+              <Field label="初始密码" required>
+                <Input
+                  type="password"
+                  value={password}
+                  autoComplete="new-password"
+                  onChange={(_, d) => setPassword(d.value)}
+                />
+              </Field>
+            </>
+          )}
           <Field label="角色">
             <Text>酒店工作人员</Text>
           </Field>
@@ -2091,9 +2519,23 @@ export function AdminAccounts() {
         title="更新账户状态"
         confirm="确认更新"
         onClose={() => setToggle("")}
-        onConfirm={() => {
+        onConfirm={async () => {
           const account = data.accounts.find((a) => a.id === toggle);
           if (!account) return;
+          if (connected) {
+            try {
+              await command({
+                action: "staff_enabled",
+                id: account.id,
+                enabled: !account.enabled,
+              });
+              setToggle("");
+              notify("账户状态已更新。");
+            } catch (cause) {
+              notify(errorMessage(cause), "error");
+            }
+            return;
+          }
           update((current) => ({
             ...current,
             accounts: current.accounts.map((a) =>

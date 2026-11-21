@@ -4,7 +4,7 @@
 
 ## 查看与操作
 
-当前预览地址：<http://172.26.49.175:5173/>。本机也可打开 <http://localhost:5173/>。
+启动原型后在本机打开 <http://localhost:5173/>。
 
 - 顾客：探索酒店 → 选择房型 → 填写预订；使用“顾客示例账户”进入订单管理。
 - 工作人员、管理员：右上角账户菜单切换对应的“原型演示”视图。
@@ -23,9 +23,9 @@
 
 ```bash
 npm ci
-npm run dev
+npm run dev:prototype
 npm run check
-npm run build
+npm run build -- --mode prototype
 npm run browser:install
 npm run test:ui
 npm run screenshots

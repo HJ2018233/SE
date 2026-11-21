@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { Command, CommandResult, Credentials, Identity } from "./api";
 import type { Conditions, DemoData, Role, Scenario } from "./model";
 
 export type AppState = {
@@ -12,7 +13,12 @@ export type AppState = {
   ) => void;
   role: Role;
   signedIn: boolean;
-  signIn: () => void;
+  signIn: (login?: Credentials, register?: boolean) => Promise<Role>;
+  identity: Identity | null;
+  connected: boolean;
+  staffHotel: string;
+  refresh: () => Promise<void>;
+  command: (command: Command) => Promise<CommandResult>;
   signOut: () => void;
   go: (path: string) => void;
   path: string;

@@ -393,15 +393,28 @@ export function ConfirmDialog({
   title: string;
   confirm?: string;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
   danger?: boolean;
   disabled?: boolean;
 }>) {
+  const running = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const confirmOnce = async () => {
+    if (running.current) return;
+    running.current = true;
+    setBusy(true);
+    try {
+      await onConfirm();
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  };
   return (
     <Dialog
       open={open}
       onOpenChange={(_, d) => {
-        if (!d.open) onClose();
+        if (!d.open && !running.current) onClose();
       }}
     >
       {open ? (
@@ -410,12 +423,14 @@ export function ConfirmDialog({
             <DialogTitle>{title}</DialogTitle>
             <DialogContent>{children}</DialogContent>
             <DialogActions>
-              <Button onClick={onClose}>返回</Button>
+              <Button disabled={busy} onClick={onClose}>
+                返回
+              </Button>
               <Button
                 appearance="primary"
                 className={danger ? "danger-button" : ""}
-                onClick={onConfirm}
-                disabled={disabled}
+                onClick={() => void confirmOnce()}
+                disabled={disabled || busy}
               >
                 {confirm}
               </Button>

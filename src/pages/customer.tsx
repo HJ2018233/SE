@@ -23,6 +23,14 @@ import {
 } from "@fluentui/react-icons";
 import { useApp } from "../context";
 import {
+  api,
+  ApiError,
+  bookingInput,
+  errorMessage,
+  operationKey,
+} from "../api";
+import type { Quote } from "../api";
+import {
   activeStatuses,
   hotelRooms,
   hotelRoom,
@@ -55,20 +63,55 @@ import {
 } from "../components/shared";
 
 export function Explore() {
-  const { data, conditions, setConditions, go } = useApp();
+  const { data, conditions, setConditions, go, connected } = useApp();
   const [edit, setEdit] = useState(false),
     [filter, setFilter] = useState(false),
     [sort, setSort] = useState("editorial");
+  const [liveOffers, setLiveOffers] = useState<Quote[] | null>(null);
+  const [searchError, setSearchError] = useState("");
+  const [offerOffset, setOfferOffset] = useState(0);
+  useEffect(() => {
+    setOfferOffset(0);
+  }, [conditions]);
+  useEffect(() => {
+    if (!connected) return;
+    let active = true;
+    setLiveOffers(null);
+    setSearchError("");
+    void api
+      .search(
+        conditions,
+        conditions.type === "all" ? "" : conditions.type,
+        offerOffset,
+      )
+      .then((result) => {
+        if (active) setLiveOffers(result);
+      })
+      .catch((error) => {
+        if (active) {
+          setLiveOffers([]);
+          setSearchError(errorMessage(error));
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [connected, conditions, offerOffset]);
   const offer = (hotel: Hotel) =>
     hotelRooms(data, hotel.id)
-      .filter((room) => roomMatches(data, hotel.id, room, conditions))
+      .filter((room) =>
+        connected
+          ? liveOffers?.some((o) => o.room === room.id)
+          : roomMatches(data, hotel.id, room, conditions),
+      )
       .sort(
         (a, b) =>
           total(quote(data, hotel.id, a.id, conditions)) -
           total(quote(data, hotel.id, b.id, conditions)),
       )[0];
   const hotels = data.hotels.filter(
-    (h) => h.enabled && h.city === conditions.city.trim() && offer(h),
+    (h) =>
+      h.enabled && (connected || h.city === conditions.city.trim()) && offer(h),
   );
   if (sort === "price")
     hotels.sort(
@@ -98,7 +141,12 @@ export function Explore() {
           筛选
         </Button>
       </div>
-      {featured ? (
+      {connected && searchError && (
+        <Notice intent="error">{searchError}</Notice>
+      )}
+      {connected && liveOffers === null ? (
+        <Spinner label="正在查找可订房型" />
+      ) : featured ? (
         <>
           <section className="hero">
             <div className="hero-intro">
@@ -279,6 +327,22 @@ export function Explore() {
         value={conditions}
         onApply={setConditions}
       />
+      {connected && (offerOffset > 0 || liveOffers?.length === 100) && (
+        <div className="button-row space-top">
+          <Button
+            disabled={!offerOffset}
+            onClick={() => setOfferOffset(offerOffset - 100)}
+          >
+            上一页房型
+          </Button>
+          <Button
+            disabled={liveOffers?.length !== 100}
+            onClick={() => setOfferOffset(offerOffset + 100)}
+          >
+            下一页房型
+          </Button>
+        </div>
+      )}
       <ConditionsDialog
         key={`filter-${filter}`}
         open={filter}
@@ -301,7 +365,7 @@ export function HotelPage({ id }: { id: string }) {
     roomMatches(data, id, room, conditions),
   );
   const [selected, setSelected] = useState(
-      () => matching[0]?.id || data.rooms[0].id,
+      () => matching[0]?.id || hotelRooms(data, id)[0]?.id || "",
     ),
     [edit, setEdit] = useState(false);
   const room = hotelRoom(data, id, selected);
@@ -470,10 +534,22 @@ export function HotelPage({ id }: { id: string }) {
 }
 
 export function Booking({ id }: { id: string }) {
-  const { data, update, conditions, go, scenario, audit, setScenario } =
-    useApp();
+  const {
+    data,
+    update,
+    conditions,
+    go,
+    scenario,
+    audit,
+    setScenario,
+    connected,
+    command,
+  } = useApp();
   const hotel = data.hotels.find((h) => h.id === id)!;
-  const roomId = sessionStorage.getItem(`hotel-room-${id}`) || "garden",
+  const roomId =
+      sessionStorage.getItem(`hotel-room-${id}`) ||
+      hotelRooms(data, id)[0]?.id ||
+      "garden",
     room = hotelRoom(data, id, roomId);
   const [name, setName] = useState(""),
     [phone, setPhone] = useState(""),
@@ -484,8 +560,72 @@ export function Booking({ id }: { id: string }) {
     [priceDialog, setPriceDialog] = useState(false),
     [delta, setDelta] = useState(0),
     [result, setResult] = useState("");
-  const locked = useRef(false),
-    nights = quote(data, id, roomId, conditions, delta);
+  const locked = useRef(false);
+  const [accepted, setAccepted] = useState<Night[]>([]);
+  const [freshQuote, setFreshQuote] = useState<Night[]>();
+  const storageKey = `hotel-book-operation-${id}`;
+  const [uncertain, setUncertain] = useState(() =>
+    connected ? sessionStorage.getItem(storageKey) || "" : "",
+  );
+  const [retryInput, setRetryInput] =
+    useState<ReturnType<typeof bookingInput>>();
+  const nights = connected
+    ? accepted
+    : quote(data, id, roomId, conditions, delta);
+  useEffect(() => {
+    if (!connected || !roomId) return;
+    let active = true;
+    void api
+      .quote(id, {
+        room: roomId,
+        start: conditions.start,
+        end: conditions.end,
+        people: conditions.people,
+        rooms: conditions.rooms,
+      })
+      .then((value) => {
+        if (active) setAccepted(value.nights);
+      })
+      .catch((cause) => {
+        if (active) setError(errorMessage(cause));
+      });
+    return () => {
+      active = false;
+    };
+  }, [connected, conditions, id, roomId]);
+  const clearOperation = () => {
+    sessionStorage.removeItem(storageKey);
+    setUncertain("");
+    setRetryInput(undefined);
+  };
+  const openResult = (orderId?: string) => {
+    if (orderId) go(`/order/${orderId}`);
+  };
+  const checkResult = async () => {
+    if (!uncertain || locked.current) return;
+    locked.current = true;
+    setBusy(true);
+    try {
+      const value = await api.operation(uncertain);
+      clearOperation();
+      if (value.problem) {
+        if (value.problem.nights) {
+          setFreshQuote(value.problem.nights);
+          setPriceDialog(true);
+        }
+        setError(value.problem.message);
+      } else openResult(value.id);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError && cause.status === 404
+          ? "还没有查到处理结果。可以稍后再查回，或在输入相同的情况下重试同一提交。"
+          : errorMessage(cause),
+      );
+    } finally {
+      locked.current = false;
+      setBusy(false);
+    }
+  };
   if (!hotel || !room) return <Empty title="预订信息不存在" />;
   const nameError = attempted && !name.trim() ? "请填写联系姓名。" : "",
     phoneError =
@@ -509,6 +649,55 @@ export function Booking({ id }: { id: string }) {
     }
     if (conditions.people > room.capacity * conditions.rooms) {
       setError("入住人数超过该房型容量，请返回修改人数或间数。");
+      return;
+    }
+    if (connected) {
+      if (!nights.length && !retryInput) {
+        setError("当前没有可确认的逐晚报价，请返回选房并重新查询。");
+        return;
+      }
+      locked.current = true;
+      setBusy(true);
+      const key = uncertain || operationKey();
+      const input =
+        retryInput || bookingInput(conditions, roomId, name, phone, nights);
+      sessionStorage.setItem(storageKey, key);
+      try {
+        const value = await command({
+          action: "book",
+          key,
+          hotel: id,
+          booking: input,
+        });
+        clearOperation();
+        openResult(value.id);
+      } catch (cause) {
+        if (
+          cause instanceof ApiError &&
+          cause.status < 500 &&
+          cause.status !== 401
+        ) {
+          clearOperation();
+          if (cause.code === "price_changed" && cause.nights) {
+            setFreshQuote(cause.nights);
+            setPriceDialog(true);
+          }
+          setError(
+            cause.order
+              ? `${cause.message}（${cause.order}）`
+              : cause.date
+                ? `${shortDate(cause.date)}不可订。请调整日期或房型。`
+                : cause.message,
+          );
+        } else {
+          setUncertain(key);
+          setRetryInput(input);
+          setError("暂时未收到预订结果。请查回本次提交，或重试同一请求。");
+        }
+      } finally {
+        locked.current = false;
+        setBusy(false);
+      }
       return;
     }
     const duplicate = data.orders.find(
@@ -674,6 +863,15 @@ export function Booking({ id }: { id: string }) {
                 <Notice intent="error">{error}</Notice>
               </div>
             )}
+            {connected && uncertain && (
+              <Button
+                className="space-top"
+                disabled={busy}
+                onClick={() => void checkResult()}
+              >
+                查回预订结果
+              </Button>
+            )}
             {result ? (
               <div className="stack space-top">
                 <Notice intent="warning">
@@ -698,7 +896,11 @@ export function Booking({ id }: { id: string }) {
                 disabled={busy}
                 icon={busy ? <Spinner size="tiny" /> : undefined}
               >
-                {busy ? "正在核对并提交…" : "确认报价并提交预订"}
+                {busy
+                  ? "正在核对并提交…"
+                  : uncertain
+                    ? "重试同一提交"
+                    : "确认报价并提交预订"}
               </Button>
             )}
             <p className="muted space-top">
@@ -731,14 +933,17 @@ export function Booking({ id }: { id: string }) {
         confirm="使用新报价，继续核对"
         onClose={() => setPriceDialog(false)}
         onConfirm={() => {
-          setDelta(3000);
+          if (connected && freshQuote) setAccepted(freshQuote);
+          else setDelta(3000);
           setConsent(false);
           setPriceDialog(false);
           setError("报价已更新，请核对新价格并重新勾选同意后提交。");
         }}
       >
         <p className="muted">
-          本次尚未创建订单，也未占房。最后一晚的每晚单间价增加 30 元。
+          {connected
+            ? "本次尚未创建订单，也未占房。请比较更新前后的价格。"
+            : "本次尚未创建订单，也未占房。最后一晚的每晚单间价增加 30 元。"}
         </p>
         <div className="compare-grid space-top">
           <NightQuote
@@ -748,7 +953,11 @@ export function Booking({ id }: { id: string }) {
           />
           <NightQuote
             label="当前报价"
-            nights={quote(data, id, roomId, conditions, 3000)}
+            nights={
+              connected
+                ? freshQuote || []
+                : quote(data, id, roomId, conditions, 3000)
+            }
             rooms={conditions.rooms}
           />
         </div>
@@ -758,21 +967,57 @@ export function Booking({ id }: { id: string }) {
 }
 
 export function Orders() {
-  const { data, go } = useApp();
+  const { data, go, connected } = useApp();
   const [hotel, setHotel] = useState("all"),
     [state, setState] = useState("all"),
     [start, setStart] = useState(""),
     [end, setEnd] = useState("");
-  const orders = data.orders
-    .filter(
-      (o) =>
-        o.owner === "me" &&
-        (hotel === "all" || o.hotel === hotel) &&
-        (state === "all" || o.status === state) &&
-        (!start || o.start >= start) &&
-        (!end || o.start < end),
-    )
-    .sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
+  const [offset, setOffset] = useState(0);
+  const [serverOrders, setServerOrders] = useState<Order[]>([]);
+  const [listError, setListError] = useState("");
+  useEffect(() => {
+    setOffset(0);
+  }, [hotel, state, start, end]);
+  useEffect(() => {
+    if (!connected) return;
+    let active = true;
+    void api
+      .orders({
+        hotel: hotel === "all" ? "" : hotel,
+        status: state === "all" ? "" : state,
+        start,
+        end,
+        limit: 20,
+        offset,
+      })
+      .then((orders) => {
+        if (active) {
+          setServerOrders(orders);
+          setListError("");
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setListError(errorMessage(error));
+          setServerOrders([]);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [connected, hotel, state, start, end, offset, data.orders]);
+  const orders = connected
+    ? serverOrders
+    : data.orders
+        .filter(
+          (o) =>
+            o.owner === "me" &&
+            (hotel === "all" || o.hotel === hotel) &&
+            (state === "all" || o.status === state) &&
+            (!start || o.start >= start) &&
+            (!end || o.start < end),
+        )
+        .sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
   return (
     <>
       <Heading
@@ -878,22 +1123,85 @@ export function Orders() {
           调整筛选条件，或去探索新的住宿。
         </Empty>
       )}
+      {listError && <Notice intent="error">{listError}</Notice>}
+      {connected && (offset > 0 || orders.length === 20) && (
+        <div className="button-row space-top">
+          <Button disabled={!offset} onClick={() => setOffset(offset - 20)}>
+            上一页
+          </Button>
+          <Button
+            disabled={orders.length !== 20}
+            onClick={() => setOffset(offset + 20)}
+          >
+            下一页
+          </Button>
+        </div>
+      )}
     </>
   );
 }
 
+function useOrderDetail(id: string) {
+  const { data, connected } = useApp();
+  const summary = data.orders.find((o) => o.id === id);
+  const [detail, setDetail] = useState<Order>();
+  const [error, setError] = useState("");
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    if (!connected) return;
+    let active = true;
+    void api
+      .order(id)
+      .then((order) => {
+        if (active) {
+          setDetail(order);
+          setError("");
+        }
+      })
+      .catch((cause) => {
+        if (active) {
+          setDetail(undefined);
+          setError(errorMessage(cause));
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    id,
+    connected,
+    summary?.status,
+    summary?.version,
+    summary?.incident,
+    revision,
+  ]);
+  return {
+    order: connected
+      ? detail?.id === id
+        ? detail
+        : undefined
+      : summary?.owner === "me"
+        ? summary
+        : undefined,
+    error,
+    reload: () => setRevision((v) => v + 1),
+  };
+}
+
 export function OrderDetail({ id }: { id: string }) {
-  const { data, update, go, audit } = useApp();
-  const order = data.orders.find((o) => o.id === id && o.owner === "me");
+  const { data, update, go, audit, connected, command, notify } = useApp();
+  const { order, error, reload } = useOrderDetail(id);
+  const cancelKey = useRef({ note: "", key: "" });
   const [cancel, setCancel] = useState(false),
     [reason, setReason] = useState("");
+  if (connected && !order && !error) return <Spinner label="正在读取订单" />;
   if (!order)
     return (
       <Empty
         title="没有可查看的订单"
         action={<Button onClick={() => go("/orders")}>返回我的订单</Button>}
       >
-        请从自己的订单列表进入。
+        {error || "请从自己的订单列表进入。"}
       </Empty>
     );
   const hotel = data.hotels.find((h) => h.id === order.hotel)!,
@@ -904,6 +1212,8 @@ export function OrderDetail({ id }: { id: string }) {
     0,
     Math.ceil((order.deadline - Date.now()) / 60000),
   );
+  const contactAvailable =
+    !order.terminalAt || Date.now() < order.terminalAt + 7 * 86400000;
   return (
     <>
       <Back to="/orders" label="返回我的订单" />
@@ -960,13 +1270,17 @@ export function OrderDetail({ id }: { id: string }) {
             <div className="fact">
               <span className="fact-label">联系姓名</span>
               <div className="fact-value">
-                {order.name || "联系信息已到期清理"}
+                {contactAvailable && order.name
+                  ? order.name
+                  : "联系信息已到期清理"}
               </div>
             </div>
             <div className="fact">
               <span className="fact-label">联系电话</span>
               <div className="fact-value">
-                {order.phone || `仅保留尾号 ${order.phoneTail || "—"}`}
+                {contactAvailable && order.phone
+                  ? order.phone
+                  : `仅保留尾号 ${order.phoneTail || "—"}`}
               </div>
             </div>
             <div className="fact">
@@ -1025,7 +1339,8 @@ export function OrderDetail({ id }: { id: string }) {
             )}
             <Button
               onClick={() => {
-                update((current) => ({ ...current }));
+                if (connected) reload();
+                else update((current) => ({ ...current }));
               }}
             >
               查回最新状态
@@ -1038,7 +1353,26 @@ export function OrderDetail({ id }: { id: string }) {
         title="取消这次预订？"
         confirm="确认取消预订"
         onClose={() => setCancel(false)}
-        onConfirm={() => {
+        onConfirm={async () => {
+          if (connected) {
+            if (!cancelKey.current.key || cancelKey.current.note !== reason) {
+              cancelKey.current = { note: reason, key: operationKey() };
+            }
+            try {
+              await command({
+                action: "cancel",
+                id,
+                note: reason,
+                key: cancelKey.current.key,
+              });
+              setCancel(false);
+              reload();
+            } catch (cause) {
+              notify(errorMessage(cause), "error");
+              reload();
+            }
+            return;
+          }
           update((current) => ({
             ...current,
             orders: current.orders.map((o) =>
@@ -1079,8 +1413,14 @@ export function OrderDetail({ id }: { id: string }) {
 }
 
 export function ModifyOrder({ id }: { id: string }) {
-  const { data, update, audit, go } = useApp();
-  const order = data.orders.find((o) => o.id === id && o.owner === "me");
+  const { connected } = useApp();
+  const { order, error } = useOrderDetail(id);
+  if (connected && !order && !error) return <Spinner label="正在读取订单" />;
+  return <ModifyForm key={id} id={id} order={order} />;
+}
+
+function ModifyForm({ id, order }: { id: string; order?: Order }) {
+  const { data, update, audit, go, connected, command } = useApp();
   const hotel = data.hotels.find((h) => h.id === order?.hotel);
   const [draft, setDraft] = useState<Conditions>(() =>
     order
@@ -1101,6 +1441,52 @@ export function ModifyOrder({ id }: { id: string }) {
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   const expectedVersion = useRef(order?.version);
+  const attempt = useRef({ fingerprint: "", key: "" });
+  const [liveQuote, setLiveQuote] = useState<Night[]>();
+  const changed = Boolean(
+    order &&
+    (draft.start !== order.start ||
+      draft.end !== order.end ||
+      draft.rooms !== order.rooms ||
+      roomId !== order.room),
+  );
+  useEffect(() => {
+    if (!connected || !changed || !hotel || !order) return;
+    let active = true;
+    setLiveQuote(undefined);
+    setError("");
+    void api
+      .quote(
+        hotel.id,
+        {
+          room: roomId,
+          start: draft.start,
+          end: draft.end,
+          people: draft.people,
+          rooms: draft.rooms,
+        },
+        id,
+      )
+      .then((value) => {
+        if (active) setLiveQuote(value.nights);
+      })
+      .catch((cause) => {
+        if (active) setError(errorMessage(cause));
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    connected,
+    changed,
+    hotel?.id,
+    id,
+    draft.start,
+    draft.end,
+    draft.rooms,
+    draft.people,
+    roomId,
+  ]);
   useEffect(
     () => setConsent(false),
     [draft.start, draft.end, draft.rooms, roomId],
@@ -1120,7 +1506,11 @@ export function ModifyOrder({ id }: { id: string }) {
     draft.end !== order.end ||
     draft.rooms !== order.rooms ||
     roomId !== order.room;
-  const nights = reprice ? quote(data, hotel.id, roomId, draft) : order.nights;
+  const nights = reprice
+    ? connected
+      ? liveQuote || []
+      : quote(data, hotel.id, roomId, draft)
+    : order.nights;
   const save = async () => {
     if (busy) return;
     setError("");
@@ -1149,6 +1539,42 @@ export function ModifyOrder({ id }: { id: string }) {
     }
     if (order.version !== expectedVersion.current) {
       setError("订单已有更新，请返回订单详情查回最新版本后再修改。");
+      return;
+    }
+    if (connected) {
+      if (reprice && !nights.length) {
+        setError("当前无可确认的新方案报价，原订单仍有效。");
+        return;
+      }
+      const booking = {
+        ...bookingInput(draft, roomId, name, phone, nights),
+        version: expectedVersion.current,
+      };
+      const fingerprint = JSON.stringify(booking);
+      if (attempt.current.fingerprint !== fingerprint)
+        attempt.current = { fingerprint, key: operationKey() };
+      setBusy(true);
+      try {
+        await command({
+          action: "revise",
+          id,
+          booking,
+          key: attempt.current.key,
+        });
+        go(`/order/${id}`);
+      } catch (cause) {
+        if (
+          cause instanceof ApiError &&
+          cause.code === "price_changed" &&
+          cause.nights
+        ) {
+          setLiveQuote(cause.nights);
+          setConsent(false);
+        }
+        setError(errorMessage(cause));
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     if (reprice && !roomMatches(data, hotel.id, room, draft, order.id)) {
@@ -1362,14 +1788,40 @@ export function AuthPage({
   register?: boolean;
   returnTo?: string;
 }) {
-  const { signIn, go } = useApp();
+  const { signIn, go, connected } = useApp();
   const [account, setAccount] = useState(""),
     [password, setPassword] = useState(""),
-    [attempted, setAttempted] = useState(false);
-  const finish = () => {
-    signIn();
-    go(returnTo || "/orders");
+    [attempted, setAttempted] = useState(false),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const finish = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const role = await signIn(
+        { username: account, password },
+        Boolean(register),
+      );
+      const home =
+        role === "staff"
+          ? "/staff/calendar"
+          : role === "admin"
+            ? "/admin/incidents"
+            : "/orders";
+      const permitted =
+        returnTo &&
+        (role === "customer"
+          ? !returnTo.startsWith("/staff") && !returnTo.startsWith("/admin")
+          : returnTo.startsWith(`/${role}/`));
+      go(permitted ? returnTo : home);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
   };
+  const minPassword = connected && register ? 10 : connected ? 1 : 6;
   return (
     <>
       <Back to="/explore" label="继续浏览酒店" />
@@ -1395,7 +1847,7 @@ export function AuthPage({
           onSubmit={(event) => {
             event.preventDefault();
             setAttempted(true);
-            if (account.trim() && password.length >= 6) finish();
+            if (account.trim() && password.length >= minPassword) void finish();
           }}
         >
           <div>
@@ -1425,18 +1877,20 @@ export function AuthPage({
               value={account}
               onChange={(_, d) => setAccount(d.value)}
               autoComplete="username"
-              placeholder="演示账户名"
+              placeholder={connected ? undefined : "演示账户名"}
             />
           </Field>
           <Field
             label="密码"
             required
             validationState={
-              attempted && password.length < 6 ? "error" : "none"
+              attempted && password.length < minPassword ? "error" : "none"
             }
             validationMessage={
-              attempted && password.length < 6
-                ? "演示密码至少填写 6 个字符。"
+              attempted && password.length < minPassword
+                ? register || !connected
+                  ? `密码至少填写 ${minPassword} 个字符。`
+                  : "请填写密码。"
                 : undefined
             }
           >
@@ -1445,13 +1899,21 @@ export function AuthPage({
               value={password}
               onChange={(_, d) => setPassword(d.value)}
               autoComplete={register ? "new-password" : "current-password"}
-              placeholder="演示密码"
+              placeholder={connected ? undefined : "演示密码"}
             />
           </Field>
-          <Button appearance="primary" size="large" type="submit">
-            {register ? "注册并继续" : "登录并继续"}
+          {error && <Notice intent="error">{error}</Notice>}
+          <Button
+            appearance="primary"
+            size="large"
+            type="submit"
+            disabled={busy}
+          >
+            {busy ? "正在验证…" : register ? "注册并继续" : "登录并继续"}
           </Button>
-          <Button onClick={finish}>使用顾客示例账户体验</Button>
+          {!connected && (
+            <Button onClick={() => void finish()}>使用顾客示例账户体验</Button>
+          )}
           <p className="muted">
             {register ? "已有账户？" : "还没有账户？"}{" "}
             <Button
@@ -1462,7 +1924,9 @@ export function AuthPage({
             </Button>
           </p>
           <Text size={200} className="muted">
-            此处为登录交互演示，不连接真实账户服务。工作人员与管理员由平台分配。
+            {connected
+              ? "工作人员与管理员使用已分配的账户登录。"
+              : "此处为登录交互演示，不连接真实账户服务。工作人员与管理员由平台分配。"}
           </Text>
         </form>
       </div>
@@ -1471,7 +1935,7 @@ export function AuthPage({
 }
 
 export function AccountPage() {
-  const { go, signOut } = useApp();
+  const { go, signOut, identity } = useApp();
   return (
     <>
       <Heading eyebrow="个人中心" title="你好，旅途中的你">
@@ -1480,10 +1944,10 @@ export function AccountPage() {
       <div className="settings-grid">
         <section className="settings-section">
           <div className="inline">
-            <Avatar name="顾客示例" size={64} />
+            <Avatar name={identity?.label || "顾客示例"} size={64} />
             <div>
               <Text size={600} weight="semibold">
-                顾客示例账户
+                {identity?.label || "顾客示例账户"}
               </Text>
               <p className="muted">顾客 · 仅查看自己的订单</p>
             </div>
@@ -1503,7 +1967,7 @@ export function AccountPage() {
             每次预订仅填写联系姓名和手机号；可在已确认、未入住的订单中修改。订单结束七天后，完整联系信息不再提供给业务用户。
           </p>
           <Button className="space-top" onClick={signOut}>
-            退出演示账户
+            {identity ? "退出登录" : "退出演示账户"}
           </Button>
         </section>
       </div>

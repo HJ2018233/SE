@@ -29,6 +29,16 @@ import {
 } from "@fluentui/react-icons";
 import { AppContext } from "./context";
 import {
+  api,
+  ApiError,
+  errorMessage,
+  getToken,
+  prototype,
+  setToken,
+} from "./api";
+import type { Command, Credentials, Identity } from "./api";
+import type { DemoData } from "./model";
+import {
   expirePending,
   initialConditions,
   loadData,
@@ -79,14 +89,29 @@ const adminTabs = [
   { path: "/admin/audit", label: "审计记录" },
 ];
 
+const emptyData: DemoData = {
+  connected: true,
+  hotels: [],
+  rooms: [],
+  orders: [],
+  calendar: {},
+  incidents: [],
+  audit: [],
+  accounts: [],
+};
+
 export function App() {
-  const [data, setData] = useState(loadData);
+  const [data, setData] = useState(() => (prototype ? loadData() : emptyData));
+  const [identity, setIdentity] = useState<Identity | null>(null);
+  const [ready, setReady] = useState(prototype);
+  const [initialError, setInitialError] = useState("");
+  const refreshIndex = useRef(0);
   const [path, setPath] = useState(
     () => window.location.hash.slice(1) || "/explore",
   );
   const [conditions, setConditions] = useState(initialConditions);
   const [signedIn, setSignedIn] = useState(
-    () => sessionStorage.getItem(SESSION) === "true",
+    () => prototype && sessionStorage.getItem(SESSION) === "true",
   );
   const [scenario, setScenarioValue] = useState<Scenario>(
     () => (sessionStorage.getItem(SCENARIO) as Scenario) || "normal",
@@ -98,11 +123,13 @@ export function App() {
     intent: "success" | "error" | "warning" | "info";
   } | null>(null);
   const mainRef = useRef<HTMLElement>(null);
-  const role: Role = path.startsWith("/staff")
+  const routeRole: Role = path.startsWith("/staff")
     ? "staff"
     : path.startsWith("/admin")
       ? "admin"
       : "customer";
+  const role = prototype ? routeRole : identity?.role || "customer";
+  const staffHotel = prototype ? "qt" : identity?.hotel || "";
   const tabs =
     role === "staff" ? staffTabs : role === "admin" ? adminTabs : customerTabs;
   const selected =
@@ -121,6 +148,7 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
   useEffect(() => {
+    if (!prototype) return;
     try {
       localStorage.setItem(STORAGE, JSON.stringify(data));
     } catch {
@@ -128,6 +156,7 @@ export function App() {
     }
   }, [data]);
   useEffect(() => {
+    if (!prototype) return;
     const timer = window.setInterval(() => setData(expirePending), 1000);
     return () => clearInterval(timer);
   }, []);
@@ -147,14 +176,91 @@ export function App() {
     ) => setNotification({ text, intent }),
     [],
   );
-  const signIn = useCallback(() => {
-    sessionStorage.setItem(SESSION, "true");
-    setSignedIn(true);
+  const refresh = useCallback(async () => {
+    if (prototype) {
+      setData((current) => ({ ...current }));
+      return;
+    }
+    const request = ++refreshIndex.current;
+    let token = getToken();
+    try {
+      let next;
+      try {
+        next = await api.state(token);
+      } catch (error) {
+        if (
+          !(error instanceof ApiError) ||
+          error.status !== 401 ||
+          getToken() !== token
+        )
+          throw error;
+        setToken("");
+        token = "";
+        setIdentity(null);
+        setSignedIn(false);
+        setData(emptyData);
+        next = await api.state("");
+      }
+      if (request !== refreshIndex.current || getToken() !== token) return;
+      setData({ ...next, connected: true });
+      setIdentity(next.account);
+      setSignedIn(Boolean(next.account));
+      setReady(true);
+      setInitialError("");
+    } catch (error) {
+      if (request === refreshIndex.current)
+        setInitialError(errorMessage(error));
+    }
   }, []);
+  useEffect(() => {
+    if (prototype) return;
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 15000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+  const signIn = async (
+    login?: Credentials,
+    register = false,
+  ): Promise<Role> => {
+    if (prototype) {
+      sessionStorage.setItem(SESSION, "true");
+      setSignedIn(true);
+      return "customer";
+    }
+    if (!login) throw new Error("登录需要账户和密码");
+    const res = await api.login(login, register);
+    setToken(res.token);
+    setIdentity(res.account);
+    setSignedIn(true);
+    setData(emptyData);
+    setReady(false);
+    await refresh();
+    return res.account.role;
+  };
   const signOut = () => {
-    sessionStorage.removeItem(SESSION);
+    if (prototype) {
+      sessionStorage.removeItem(SESSION);
+    } else {
+      const token = getToken();
+      setToken("");
+      setIdentity(null);
+      setData(emptyData);
+      void api.logout(token).catch(() => undefined);
+      void refresh();
+    }
     setSignedIn(false);
     go("/explore");
+  };
+  const command = async (input: Command) => {
+    try {
+      const result = await api.command(input);
+      await refresh();
+      return result;
+    } catch (error) {
+      if (error instanceof ApiError && [401, 409].includes(error.status))
+        void refresh();
+      throw error;
+    }
   };
   const audit = useCallback(
     (action: string, object: string, detail: string, result = "成功") =>
@@ -185,7 +291,7 @@ export function App() {
     sessionStorage.setItem(SCENARIO, value);
   };
   const switchRole = (next: Role) => {
-    if (next !== "customer") signIn();
+    if (next !== "customer") void signIn();
     go(
       next === "staff"
         ? "/staff/calendar"
@@ -196,12 +302,31 @@ export function App() {
   };
   const id = path.split("/")[2];
   const requiresSignIn =
-    role === "customer" &&
-    ["/orders", "/order/", "/book/", "/modify/", "/account"].some(
-      (prefix) => path === prefix || path.startsWith(prefix),
-    );
+    (!prototype && routeRole !== "customer") ||
+    (role === "customer" &&
+      ["/orders", "/order/", "/book/", "/modify/", "/account"].some(
+        (prefix) => path === prefix || path.startsWith(prefix),
+      ));
   let page;
-  if (requiresSignIn && !signedIn) page = <AuthPage returnTo={path} />;
+  if (!ready)
+    page = (
+      <Empty title={initialError ? "连接服务失败" : "正在载入"}>
+        {initialError && (
+          <>
+            <p>{initialError}</p>
+            <Button onClick={() => void refresh()}>重试</Button>
+          </>
+        )}
+      </Empty>
+    );
+  else if (requiresSignIn && !signedIn) page = <AuthPage returnTo={path} />;
+  else if (!prototype && routeRole !== "customer" && routeRole !== role)
+    page = (
+      <Empty
+        title="此页面需要相应账户权限"
+        action={<Button onClick={() => go(tabs[0].path)}>返回工作台</Button>}
+      />
+    );
   else if (path === "/explore" || path === "/") page = <Explore />;
   else if (path.startsWith("/hotel/")) page = <HotelPage id={id} />;
   else if (path.startsWith("/book/")) page = <Booking id={id} />;
@@ -209,7 +334,7 @@ export function App() {
   else if (path.startsWith("/order/")) page = <OrderDetail id={id} />;
   else if (path.startsWith("/modify/")) page = <ModifyOrder id={id} />;
   else if (path === "/login" || path === "/register")
-    page = <AuthPage register={path === "/register"} />;
+    page = <AuthPage key={path} register={path === "/register"} />;
   else if (path === "/account") page = <AccountPage />;
   else if (path === "/staff/calendar") page = <CalendarPage />;
   else if (path === "/staff/orders") page = <StaffOrders />;
@@ -222,7 +347,11 @@ export function App() {
   else if (path === "/admin/hotels") page = <AdminHotels />;
   else if (path === "/admin/accounts") page = <AdminAccounts />;
   else page = <Explore />;
-  if (role === "staff" && !data.accounts.find((a) => a.id === "ST001")?.enabled)
+  if (
+    prototype &&
+    role === "staff" &&
+    !data.accounts.find((a) => a.id === "ST001")?.enabled
+  )
     page = (
       <Empty title="工作人员示例账户已停用">
         请在平台管理员视图中核对账户状态。
@@ -236,6 +365,11 @@ export function App() {
         audit,
         role,
         signedIn,
+        identity,
+        connected: !prototype,
+        staffHotel,
+        refresh,
+        command,
         signIn,
         signOut,
         go,
@@ -291,7 +425,7 @@ export function App() {
                 <MenuTrigger disableButtonEnhancement>
                   <Button
                     appearance="subtle"
-                    aria-label={`${role === "staff" ? "栖庭 · 工作台" : role === "admin" ? "平台管理" : signedIn ? "我的账户" : "访客"}，打开账户菜单与原型视图`}
+                    aria-label={`${role === "staff" ? "酒店工作台" : role === "admin" ? "平台管理" : signedIn ? "我的账户" : "访客"}，打开账户菜单${prototype ? "与原型视图" : ""}`}
                     icon={
                       signedIn ? (
                         <Avatar
@@ -311,7 +445,8 @@ export function App() {
                   >
                     <span className="account-label">
                       {role === "staff"
-                        ? "栖庭 · 工作台"
+                        ? (data.hotels.find((h) => h.id === staffHotel)?.name ||
+                            "酒店") + " · 工作台"
                         : role === "admin"
                           ? "平台管理"
                           : signedIn
@@ -330,22 +465,28 @@ export function App() {
                         {signedIn ? "个人中心" : "登录 / 注册"}
                       </MenuItem>
                     )}
-                    <MenuDivider />
-                    <MenuItem onClick={() => switchRole("customer")}>
-                      顾客视图（原型演示）
-                    </MenuItem>
-                    <MenuItem onClick={() => switchRole("staff")}>
-                      酒店工作人员视图（原型演示）
-                    </MenuItem>
-                    <MenuItem onClick={() => switchRole("admin")}>
-                      平台管理员视图（原型演示）
-                    </MenuItem>
-                    <MenuDivider />
-                    <MenuItem onClick={() => setToolsOpen(true)}>
-                      原型场景
-                    </MenuItem>
+                    {prototype && (
+                      <>
+                        <MenuDivider />
+                        <MenuItem onClick={() => switchRole("customer")}>
+                          顾客视图（原型演示）
+                        </MenuItem>
+                        <MenuItem onClick={() => switchRole("staff")}>
+                          酒店工作人员视图（原型演示）
+                        </MenuItem>
+                        <MenuItem onClick={() => switchRole("admin")}>
+                          平台管理员视图（原型演示）
+                        </MenuItem>
+                        <MenuDivider />
+                        <MenuItem onClick={() => setToolsOpen(true)}>
+                          原型场景
+                        </MenuItem>
+                      </>
+                    )}
                     {signedIn && (
-                      <MenuItem onClick={signOut}>退出演示账户</MenuItem>
+                      <MenuItem onClick={signOut}>
+                        {prototype ? "退出演示账户" : "退出登录"}
+                      </MenuItem>
                     )}
                   </MenuList>
                 </MenuPopover>
@@ -395,16 +536,22 @@ export function App() {
           {page}
         </main>
         <footer className="app-footer">
-          <span>界面原型 · 酒店、联系人与报价均为演示数据</span>
+          <span>
+            {prototype
+              ? "界面原型 · 酒店、联系人与报价均为演示数据"
+              : "酒店预订系统"}
+          </span>
           <div>
             <span>北京时间 · 人民币</span>
-            <Button
-              size="small"
-              appearance="subtle"
-              onClick={() => setToolsOpen(true)}
-            >
-              原型场景
-            </Button>
+            {prototype && (
+              <Button
+                size="small"
+                appearance="subtle"
+                onClick={() => setToolsOpen(true)}
+              >
+                原型场景
+              </Button>
+            )}
           </div>
         </footer>
       </div>
