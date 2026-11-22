@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Avatar,
+  Badge,
   Button,
   Dialog,
   DialogActions,
@@ -328,11 +329,11 @@ export function App() {
       />
     );
   else if (path === "/explore" || path === "/") page = <Explore />;
-  else if (path.startsWith("/hotel/")) page = <HotelPage id={id} />;
-  else if (path.startsWith("/book/")) page = <Booking id={id} />;
+  else if (path.startsWith("/hotel/")) page = <HotelPage key={id} id={id} />;
+  else if (path.startsWith("/book/")) page = <Booking key={id} id={id} />;
   else if (path === "/orders") page = <Orders />;
-  else if (path.startsWith("/order/")) page = <OrderDetail id={id} />;
-  else if (path.startsWith("/modify/")) page = <ModifyOrder id={id} />;
+  else if (path.startsWith("/order/")) page = <OrderDetail key={id} id={id} />;
+  else if (path.startsWith("/modify/")) page = <ModifyOrder key={id} id={id} />;
   else if (path === "/login" || path === "/register")
     page = <AuthPage key={path} register={path === "/register"} />;
   else if (path === "/account") page = <AccountPage />;
@@ -394,20 +395,27 @@ export function App() {
         </a>
         <header className="app-header">
           <div className="header-inner">
-            <Button
-              appearance="transparent"
-              className="brand"
-              onClick={() =>
-                go(role === "customer" ? "/explore" : tabs[0].path)
-              }
-            >
-              <span className="brand-symbol">
-                <Building24Regular />
-              </span>
-              <Text weight="semibold" size={400}>
-                酒店预订系统
-              </Text>
-            </Button>
+            <div className="brand-group">
+              <Button
+                appearance="transparent"
+                className="brand"
+                onClick={() =>
+                  go(role === "customer" ? "/explore" : tabs[0].path)
+                }
+              >
+                <span className="brand-symbol">
+                  <Building24Regular />
+                </span>
+                <Text weight="semibold" size={400}>
+                  酒店预订系统
+                </Text>
+              </Button>
+              {role !== "customer" && (
+                <Badge appearance="tint" color="brand" className="role-pill">
+                  {role === "staff" ? "酒店工作台" : "平台管理台"}
+                </Badge>
+              )}
+            </div>
             <nav aria-label="主要导航" className="desktop-navigation">
               <TabList
                 selectedValue={selected}

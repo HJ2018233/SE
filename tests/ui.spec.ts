@@ -424,12 +424,121 @@ test("手机访客导航具备可读名称与无障碍结构", async ({ page }) 
   expect(results.violations).toEqual([]);
 });
 
+test("管理端使用工作台业务标题并清理旧营销标题", async ({ page }) => {
+  const forbidden = [
+    "让客人先读懂这家酒店",
+    "把每一晚，安排妥当",
+    "下一位客人，准备就绪",
+    "每一个间夜，都有来处",
+    "把意外，一件件妥善处理",
+    "让每一次处理，有迹可循",
+    "每一家酒店，都有清晰的边界",
+    "让职责，与酒店对应",
+  ];
+  for (const [route, heading] of [
+    ["/staff/calendar", "房量与价格日历"],
+    ["/staff/orders", "订单处理"],
+    ["/staff/hotel", "酒店与房型资料"],
+    ["/staff/stats", "统计与导出"],
+    ["/staff/incidents", "异常处置"],
+    ["/staff/audit", "操作日志"],
+    ["/admin/incidents", "异常事件管理"],
+    ["/admin/hotels", "酒店管理"],
+    ["/admin/accounts", "账户与权限"],
+    ["/admin/audit", "平台审计记录"],
+  ] as const) {
+    await open(page, route);
+    await expect(page.getByRole("heading", { level: 1, name: heading, exact: true })).toBeVisible();
+    const text = await page.locator("main").innerText();
+    for (const phrase of forbidden) expect(text).not.toContain(phrase);
+  }
+});
+
+test("自定义 Fluent 日历限制公历天数且支持键盘 Escape 分层关闭", async ({
+  page,
+}) => {
+  await open(page, "/explore");
+  await page.getByRole("button", { name: /修改住宿条件/ }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+
+  await dialog.getByRole("button", { name: "打开日历选择日期" }).first().click();
+  const popover = page.getByRole("group", { name: "日历日期选择" });
+  await expect(popover).toBeVisible();
+  await expect(popover.getByRole("button", { name: "2026年11月30日" })).toBeVisible();
+  await expect(popover.getByRole("button", { name: "2026年11月31日" })).toHaveCount(0);
+
+  await popover.getByRole("button", { name: "2026年11月30日" }).focus();
+  await page.keyboard.press("Escape");
+  await expect(popover).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+
+  const startInput = dialog.getByLabel("入住日期");
+  await startInput.fill("2026-11-31");
+  await expect(dialog.getByText("该公历日期不存在", { exact: false })).toBeVisible();
+  await dialog.getByRole("button", { name: "查找酒店", exact: true }).click();
+  await expect(dialog).toBeVisible();
+
+  await startInput.fill("2026-11-28");
+  await dialog.getByRole("button", { name: "查找酒店", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+});
+
+test("日历编辑支持房型切换、直接输入小数价格与十元步进及退格清空", async ({
+  page,
+}) => {
+  await open(page, "/staff/calendar");
+  await page.getByRole("button", { name: "批量维护日期", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+
+  await dialog.getByLabel("房型").selectOption("window");
+  const priceInput = dialog.getByLabel("每晚单间价（元）");
+  await expect(priceInput).toHaveValue("498");
+
+  await dialog.getByRole("button", { name: "加价 10 元" }).click();
+  await expect(priceInput).toHaveValue("508");
+
+  await priceInput.fill("");
+  await expect(priceInput).toHaveValue("");
+  await priceInput.fill("512.50");
+  await expect(priceInput).toHaveValue("512.50");
+
+  const qtyInput = dialog.getByLabel("每日可售总量");
+  await qtyInput.fill("");
+  await expect(qtyInput).toHaveValue("");
+  await qtyInput.fill("15");
+
+  await dialog.getByRole("button", { name: "保存所选日期", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("button", { name: /临窗大床房.*¥512\.50.*可订 15 间，编辑/ })
+      .first(),
+  ).toBeVisible();
+});
+
+test("选房页整卡可点，改订页隐藏目的地城市输入", async ({ page }) => {
+  await open(page, "/hotel/qt");
+  await page.locator(".room-option").filter({ hasText: "临窗大床房" }).click();
+  await expect(page.locator("aside.aside-panel")).toContainText("临窗大床房");
+
+  await open(page, "/modify/HB20260001");
+  await expect(page.getByLabel("目的地城市")).toHaveCount(0);
+});
+
 for (const route of [
   "/explore",
   "/hotel/qt",
   "/book/qt",
+  "/orders",
+  "/order/HB20260001",
   "/staff/calendar",
+  "/staff/orders",
+  "/staff/hotel",
+  "/staff/stats",
   "/admin/incidents",
+  "/admin/accounts",
 ]) {
   test(`无障碍自动检查 ${route}`, async ({ page }) => {
     await open(page, route);

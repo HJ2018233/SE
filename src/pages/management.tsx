@@ -21,6 +21,7 @@ import {
   ArrowDownload20Regular,
   ArrowLeft20Regular,
   ArrowRight20Regular,
+  CalendarToday20Regular,
   Dismiss20Regular,
   Edit20Regular,
   Eye20Regular,
@@ -38,7 +39,10 @@ import {
   days,
   downloadCsv,
   entryKey,
+  formatDisplayTime,
+  incidentBlocked,
   initialConditions,
+  isValidIsoDate,
   money,
   nightState,
   occupied,
@@ -62,16 +66,20 @@ import {
   Empty,
   Heading,
   NightQuote,
+  NightStateBadge,
   Notice,
   Price,
   Status,
 } from "../components/shared";
+import { FluentDatePicker } from "../components/DateField";
+import { NumericInput } from "../components/NumericInput";
 
 export function CalendarPage() {
   const { data, update, audit, notify, staffHotel, connected, command } =
     useApp();
   const hotelName =
     data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
+  const roomsList = hotelRooms(data, staffHotel);
   const baseCalendar = useRef(data.calendar);
   const [start, setStart] = useState(initialConditions.start),
     [focused, setFocused] = useState(initialConditions.start);
@@ -82,20 +90,67 @@ export function CalendarPage() {
     [price, setPrice] = useState(""),
     [stopped, setStopped] = useState(false),
     [error, setError] = useState("");
+  const dateErrors = useRef({ start: "", end: "" });
   const week = days(start, addDays(start, 7));
-  const open = (room: string, date: string) => {
-    const entry = calendarEntry(data, staffHotel, room, date);
-    baseCalendar.current = data.calendar;
-    setEdit({ room, date });
-    setEditStart(date);
-    setEditEnd(addDays(date, 1));
+
+  const loadRoomValues = (roomId: string, targetDate: string) => {
+    const safeDate = isValidIsoDate(targetDate) ? targetDate : TODAY;
+    const entry = calendarEntry(data, staffHotel, roomId, safeDate);
     setAmount(String(entry.total));
     setPrice(entry.price ? String(entry.price / 100) : "");
     setStopped(entry.version > 0 && entry.stopped);
+  };
+
+  const open = (room: string, date: string) => {
+    baseCalendar.current = data.calendar;
+    dateErrors.current = { start: "", end: "" };
+    setEdit({ room, date });
+    setEditStart(date);
+    setEditEnd(addDays(date, 1));
+    loadRoomValues(room, date);
     setError("");
   };
+
+  const switchEditRoom = (nextRoom: string) => {
+    if (!edit) return;
+    setEdit({ ...edit, room: nextRoom });
+    loadRoomValues(nextRoom, editStart || edit.date);
+    setError("");
+  };
+
+  const handleEditStartChange = (nextStart: string) => {
+    if (!isValidIsoDate(nextStart)) {
+      setEditStart(nextStart);
+      return;
+    }
+    const prevLength =
+      isValidIsoDate(editStart) && isValidIsoDate(editEnd)
+        ? days(editStart, editEnd).length
+        : 1;
+    const span = prevLength >= 1 && prevLength <= 90 ? prevLength : 1;
+    let nextEnd = editEnd;
+    if (
+      !isValidIsoDate(editEnd) ||
+      editEnd <= nextStart ||
+      days(nextStart, editEnd).length > 90
+    ) {
+      nextEnd = addDays(nextStart, span);
+    }
+    setEditStart(nextStart);
+    setEditEnd(nextEnd);
+    if (error) setError("");
+  };
+
   const save = async () => {
     if (!edit) return;
+    if (dateErrors.current.start || dateErrors.current.end) {
+      setError(dateErrors.current.start || dateErrors.current.end);
+      return;
+    }
+    if (!isValidIsoDate(editStart) || !isValidIsoDate(editEnd)) {
+      setError("请输入有效的公历日期。");
+      return;
+    }
     const dates = days(editStart, editEnd);
     if (
       !editStart ||
@@ -106,13 +161,15 @@ export function CalendarPage() {
       setError("请选择今天起、连续不超过 90 个住宿日的范围，结束日期不含。");
       return;
     }
+    const cleanAmount = amount.trim();
+    const cleanPrice = price.trim();
     if (
-      !Number.isInteger(Number(amount)) ||
-      Number(amount) < 0 ||
-      !/^\d+(\.\d{1,2})?$/.test(price) ||
-      Number(price) <= 0
+      !/^\d+$/.test(cleanAmount) ||
+      Number(cleanAmount) > 10000 ||
+      !/^\d+(\.\d{1,2})?$/.test(cleanPrice) ||
+      Number(cleanPrice) <= 0
     ) {
-      setError("房量须为非负整数，价格须大于零且最多保留两位小数。");
+      setError("房量须为 0 至 10000 的整数，价格须大于零且最多保留两位小数。");
       return;
     }
     if (connected) {
@@ -123,8 +180,8 @@ export function CalendarPage() {
           room: edit.room,
           calendar: dates.map((date) => ({
             date,
-            total: Number(amount),
-            price: Math.round(Number(price) * 100),
+            total: Number(cleanAmount),
+            price: Math.round(Number(cleanPrice) * 100),
             stopped,
             version:
               baseCalendar.current[entryKey(staffHotel, edit.room, date)]
@@ -139,7 +196,8 @@ export function CalendarPage() {
       return;
     }
     const conflict = dates.find(
-      (date) => occupied(data, staffHotel, edit.room, date) > Number(amount),
+      (date) =>
+        occupied(data, staffHotel, edit.room, date) > Number(cleanAmount),
     );
     if (conflict) {
       setError(
@@ -152,8 +210,8 @@ export function CalendarPage() {
       for (const date of dates) {
         const prior = calendarEntry(current, staffHotel, edit.room, date);
         calendar[entryKey(staffHotel, edit.room, date)] = {
-          total: Number(amount),
-          price: Math.round(Number(price) * 100),
+          total: Number(cleanAmount),
+          price: Math.round(Number(cleanPrice) * 100),
           stopped,
           version: prior.version + 1,
         };
@@ -163,7 +221,7 @@ export function CalendarPage() {
     audit(
       "更新房量价格日历",
       `${staffHotel}/${edit.room}`,
-      `${editStart} 至 ${editEnd}（不含）；${dates.length} 个住宿日；总量 ${amount}；${stopped ? "普通停售" : "可售"}`,
+      `${editStart} 至 ${editEnd}（不含）；${dates.length} 个住宿日；总量 ${cleanAmount}；${stopped ? "普通停售" : "可售"}`,
     );
     setEdit(null);
     notify("所选日期已一起保存。已有订单的价格快照保持不变。");
@@ -171,26 +229,39 @@ export function CalendarPage() {
   const cell = (room: Room, date: string) => {
     const entry = calendarEntry(data, staffHotel, room.id, date),
       used = occupied(data, staffHotel, room.id, date),
-      sellable = available(data, staffHotel, room.id, date);
+      sellable = available(data, staffHotel, room.id, date),
+      incBlocked = incidentBlocked(data, staffHotel, room.id, date),
+      unscheduled = connected && entry.version === 0,
+      soldOut =
+        sellable === 0 && !incBlocked && !entry.stopped && !unscheduled;
+    const statusLabel = incBlocked
+      ? "异常停售"
+      : unscheduled
+        ? "未排期"
+        : entry.stopped
+          ? "已停售"
+          : soldOut
+            ? "已满房"
+            : `可订 ${sellable} 间`;
     return (
       <Button
         key={`${room.id}-${date}`}
         appearance="subtle"
-        className={`day-cell ${sellable === 0 ? "stopped" : ""}`}
+        className={`day-cell ${sellable === 0 ? "stopped" : ""} ${soldOut ? "sold-out" : ""}`}
         aria-label={`${room.name} ${shortDate(date)}，${money(entry.price)}，可订 ${sellable} 间，编辑`}
         onClick={() => open(room.id, date)}
       >
         <Text size={400} weight="semibold">
-          {money(entry.price)}
+          {unscheduled ? "—" : money(entry.price)}
         </Text>
-        <span className="muted">
-          {sellable === 0 ? "已停售 / 不可订" : `可订 ${sellable} 间`}
+        <span className={`day-status ${sellable === 0 ? "muted" : "available"}`}>
+          {statusLabel}
         </span>
         <div className="occupancy-track" aria-hidden="true">
           <div
             className="occupancy-fill"
             style={{
-              width: `${entry.total ? (used / entry.total) * 100 : 0}%`,
+              width: `${entry.total ? Math.min(100, (used / entry.total) * 100) : 0}%`,
             }}
           />
         </div>
@@ -200,19 +271,20 @@ export function CalendarPage() {
       </Button>
     );
   };
+  const editDatesCount =
+    isValidIsoDate(editStart) && isValidIsoDate(editEnd) && editEnd > editStart
+      ? days(editStart, editEnd).length
+      : 0;
   return (
     <>
       <div className="workspace-intro">
-        <Heading
-          eyebrow={`${hotelName} / 酒店工作台`}
-          title="把每一晚，安排妥当"
-        >
-          在同一张日历中维护房量、价格和停售，点选住宿日即可编辑。
+        <Heading eyebrow={`${hotelName} · 酒店工作台`} title="房量与价格日历">
+          在同一张日历中维护每日房量、单间价格与停售状态，点击任意日期格即可编辑。
         </Heading>
         <div className="workspace-note">
-          普通停售影响新增预订。
+          普通停售仅限制新增预订，已承诺订单继续保留。
           <br />
-          已承诺订单继续保留，实际不能履约请登记异常。
+          若实际无法履约，请前往“异常处置”登记事件。
         </div>
       </div>
       <div className="calendar-tools">
@@ -239,66 +311,113 @@ export function CalendarPage() {
               setFocused(addDays(start, 7));
             }}
           />
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<CalendarToday20Regular />}
+            disabled={start === TODAY}
+            onClick={() => {
+              setStart(TODAY);
+              setFocused(TODAY);
+            }}
+          >
+            回到今天
+          </Button>
         </div>
-        <Button
-          icon={<Edit20Regular />}
-          onClick={() => open(hotelRooms(data, staffHotel)[0].id, start)}
-        >
-          批量维护日期
-        </Button>
+        <div className="inline calendar-tool-actions">
+          <div className="calendar-jump">
+            <FluentDatePicker
+              aria-label="跳转至指定周起始日"
+              value={start}
+              minDate={TODAY}
+              onChange={(next) => {
+                if (isValidIsoDate(next) && next >= TODAY) {
+                  setStart(next);
+                  setFocused(next);
+                }
+              }}
+            />
+          </div>
+          <Button
+            appearance="primary"
+            icon={<Edit20Regular />}
+            disabled={!roomsList.length}
+            onClick={() => roomsList[0] && open(roomsList[0].id, start)}
+          >
+            批量维护日期
+          </Button>
+        </div>
       </div>
-      <section className="calendar-board" aria-label="一周房量价格日历">
-        <div className="calendar-heading">房型 / 住宿日</div>
-        {week.map((date) => (
-          <div className="calendar-heading" key={date}>
-            <Text weight="semibold">{shortDate(date)}</Text>
-            <p className="muted">{weekday(date)}</p>
-          </div>
-        ))}
-        {hotelRooms(data, staffHotel).map((room) => (
-          <div style={{ display: "contents" }} key={room.id}>
-            <div className="calendar-room">
-              <Text weight="semibold">{room.name}</Text>
-              <Text size={200} className="muted">
-                {room.size} m² · {room.capacity} 人 / 间
-              </Text>
-            </div>
-            {week.map((date) => cell(room, date))}
-          </div>
-        ))}
-      </section>
-      <section className="mobile-calendar" aria-label="按日查看房量">
-        <Field label="查看住宿日">
-          <Select value={focused} onChange={(_, d) => setFocused(d.value)}>
-            {week.map((date) => (
-              <option key={date} value={date}>
-                {shortDate(date)} · {weekday(date)}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        {hotelRooms(data, staffHotel).map((room) => {
-          const entry = calendarEntry(data, staffHotel, room.id, focused);
-          return (
-            <article className="room-edit-row" key={room.id}>
-              <div>
-                <Text size={400} weight="semibold">
-                  {room.name}
-                </Text>
-                <p className="space-top">
-                  <Price value={entry.price} />
-                </p>
-                <p className="muted">
-                  可订 {available(data, staffHotel, room.id, focused)} · 剩余{" "}
-                  {entry.total - occupied(data, staffHotel, room.id, focused)} ·
-                  总量 {entry.total}
-                </p>
+      {roomsList.length ? (
+        <>
+          <section className="calendar-board" aria-label="一周房量价格日历">
+            <div className="calendar-heading">房型 / 住宿日</div>
+            {week.map((date) => {
+              const wd = weekday(date);
+              const isWeekend = wd === "周六" || wd === "周日";
+              return (
+                <div
+                  className={`calendar-heading ${date === TODAY ? "is-today" : ""} ${isWeekend ? "is-weekend" : ""}`}
+                  key={date}
+                >
+                  <Text weight="semibold">{shortDate(date)}</Text>
+                  <p className="muted">
+                    {date === TODAY ? `今天 · ${wd}` : wd}
+                  </p>
+                </div>
+              );
+            })}
+            {roomsList.map((room) => (
+              <div style={{ display: "contents" }} key={room.id}>
+                <div className="calendar-room">
+                  <Text weight="semibold">{room.name}</Text>
+                  <Text size={200} className="muted">
+                    {room.size} m² · {room.capacity} 人 / 间
+                  </Text>
+                </div>
+                {week.map((date) => cell(room, date))}
               </div>
-              <Button onClick={() => open(room.id, focused)}>编辑</Button>
-            </article>
-          );
-        })}
-      </section>
+            ))}
+          </section>
+          <section className="mobile-calendar" aria-label="按日查看房量">
+            <Field label="查看住宿日">
+              <Select value={focused} onChange={(_, d) => setFocused(d.value)}>
+                {week.map((date) => (
+                  <option key={date} value={date}>
+                    {shortDate(date)} · {weekday(date)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {roomsList.map((room) => {
+              const entry = calendarEntry(data, staffHotel, room.id, focused);
+              const sellable = available(data, staffHotel, room.id, focused);
+              return (
+                <article className="room-edit-row" key={room.id}>
+                  <div>
+                    <Text size={400} weight="semibold">
+                      {room.name}
+                    </Text>
+                    <p className="space-top">
+                      <Price value={entry.price} />
+                    </p>
+                    <p className="muted">
+                      可订 {sellable} · 剩余{" "}
+                      {entry.total - occupied(data, staffHotel, room.id, focused)} ·
+                      总量 {entry.total}
+                    </p>
+                  </div>
+                  <Button onClick={() => open(room.id, focused)}>编辑</Button>
+                </article>
+              );
+            })}
+          </section>
+        </>
+      ) : (
+        <Empty title="暂无可排期房型">
+          请先在“酒店与房型”页面新增房型后再设置每日房量与价格。
+        </Empty>
+      )}
       <div className="legend">
         <span>
           每晚单间价 · 人民币　／　占用条包含预占、承诺、在住占用与已消费
@@ -312,43 +431,102 @@ export function CalendarPage() {
         onClose={() => setEdit(null)}
         onConfirm={save}
       >
-        <p className="muted space-top">
-          {hotelRooms(data, staffHotel).find((r) => r.id === edit?.room)?.name}{" "}
-          · 已有订单报价保持不变。
+        <p className="muted">
+          批量调整房量、每晚价格与停售状态；已有订单的价格快照保持不变。
         </p>
         <div className="form-grid space-top">
+          <Field label="房型" className="span-2">
+            <Select
+              value={edit?.room || ""}
+              onChange={(_, d) => switchEditRoom(d.value)}
+            >
+              {roomsList.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                  {!r.enabled ? "（已停用）" : ""}
+                </option>
+              ))}
+            </Select>
+          </Field>
           <Field label="住宿日起">
-            <Input
-              type="date"
+            <FluentDatePicker
               value={editStart}
-              onChange={(_, d) => setEditStart(d.value)}
+              minDate={TODAY}
+              rangeStart={isValidIsoDate(editStart) ? editStart : undefined}
+              rangeEnd={isValidIsoDate(editEnd) ? editEnd : undefined}
+              rangeHint={
+                editDatesCount > 0 ? `共 ${editDatesCount} 个住宿日` : undefined
+              }
+              onValidityChange={(msg) => {
+                dateErrors.current.start = msg;
+              }}
+              onChange={handleEditStartChange}
             />
           </Field>
           <Field label="住宿日止（不含）">
-            <Input
-              type="date"
+            <FluentDatePicker
               value={editEnd}
-              onChange={(_, d) => setEditEnd(d.value)}
+              minDate={
+                isValidIsoDate(editStart)
+                  ? addDays(editStart, 1)
+                  : addDays(TODAY, 1)
+              }
+              maxDate={
+                isValidIsoDate(editStart) ? addDays(editStart, 90) : undefined
+              }
+              rangeStart={isValidIsoDate(editStart) ? editStart : undefined}
+              rangeEnd={isValidIsoDate(editEnd) ? editEnd : undefined}
+              rangeHint={
+                editDatesCount > 0
+                  ? `含 ${editDatesCount} 晚（最多 90 晚）`
+                  : "最多连续 90 晚"
+              }
+              onValidityChange={(msg) => {
+                dateErrors.current.end = msg;
+              }}
+              onChange={(nextEnd) => {
+                setEditEnd(nextEnd);
+                if (error) setError("");
+              }}
             />
           </Field>
           <Field label="每日可售总量">
-            <Input
-              type="number"
+            <NumericInput
               min={0}
+              max={10000}
               step={1}
+              suffix="间"
+              decreaseLabel="下调可售房量"
+              increaseLabel="上调可售房量"
               value={amount}
-              onChange={(_, d) => setAmount(d.value)}
+              onChange={(next) => {
+                setAmount(next);
+                if (error) setError("");
+              }}
             />
           </Field>
           <Field label="每晚单间价（元）">
-            <Input
-              type="number"
-              min="0.01"
-              step="0.01"
+            <NumericInput
+              decimal
+              min={0.01}
+              max={100000}
+              step={10}
+              prefix="¥"
+              decreaseLabel="降价 10 元"
+              increaseLabel="加价 10 元"
               value={price}
-              onChange={(_, d) => setPrice(d.value)}
+              onChange={(next) => {
+                setPrice(next);
+                if (error) setError("");
+              }}
             />
           </Field>
+          {editDatesCount > 0 && (
+            <Text size={200} className="muted span-2">
+              将更新 {editDatesCount} 个住宿日（{shortDate(editStart)} —{" "}
+              {shortDate(editEnd)}，不含止日）。
+            </Text>
+          )}
           <Switch
             className="span-2"
             checked={stopped}
@@ -440,7 +618,13 @@ function OrderInspector({
     order.incident &&
     !data.incidents.find((i) => i.id === order.incident)?.closed,
   );
-  const now = Date.now();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    setNow(Date.now());
+    if (order.status !== "待确认") return;
+    const timer = window.setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, [order.id, order.status]);
   const checkinEnds = Date.parse(`${order.end}T12:00:00+08:00`);
   const canCheckin =
     now >= Date.parse(`${order.start}T14:00:00+08:00`) && now < checkinEnds;
@@ -703,6 +887,7 @@ function OrderInspector({
         </DrawerFooter>
       )}
       <ConfirmDialog
+        danger={action === "已拒绝" || action === "已取消"}
         open={Boolean(action)}
         title={
           action === "已取消"
@@ -748,8 +933,8 @@ function OrderInspector({
               {order.nights.map((n) => (
                 <div className="section-label" key={n.date}>
                   <span>{shortDate(n.date)}</span>
-                  <Badge appearance="outline">
-                    {nightState(
+                  <NightStateBadge
+                    state={nightState(
                       {
                         ...order,
                         occupancy: undefined,
@@ -758,7 +943,7 @@ function OrderInspector({
                       },
                       n.date,
                     )}
-                  </Badge>
+                  />
                 </div>
               ))}
             </div>
@@ -851,6 +1036,11 @@ export function StaffOrders() {
   const [offset, setOffset] = useState(0);
   const [remote, setRemote] = useState<Order[]>([]);
   const [queryError, setQueryError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => setOffset(0), [start, end, room, state, search]);
   useEffect(() => {
     if (!connected) return;
@@ -889,6 +1079,8 @@ export function StaffOrders() {
             o.hotel === staffHotel &&
             (state === "all" || o.status === state) &&
             (room === "all" || o.room === room) &&
+            (!start || o.start >= start) &&
+            (!end || o.start < end) &&
             o.id.toLowerCase().includes(search.toLowerCase()),
         )
         .sort(
@@ -900,24 +1092,61 @@ export function StaffOrders() {
   const current =
     (connected ? remote.find((o) => o.id === selected) : undefined) ||
     data.orders.find((o) => o.id === selected && o.hotel === staffHotel);
+  const pendingCount = data.orders.filter(
+    (o) => o.hotel === staffHotel && o.status === "待确认",
+  ).length;
+  const hasFilters =
+    state !== "all" ||
+    room !== "all" ||
+    search !== "" ||
+    start !== "" ||
+    end !== "";
+  const resetFilters = () => {
+    setState("all");
+    setRoom("all");
+    setSearch("");
+    setStart("");
+    setEnd("");
+  };
   return (
     <>
       <Heading
-        eyebrow={`${hotelName} / 订单处理`}
-        title="下一位客人，准备就绪"
+        eyebrow={`${hotelName} · 酒店工作台`}
+        title="订单处理"
         action={
-          <Badge appearance="tint" color="warning">
-            {
-              data.orders.filter(
-                (o) => o.hotel === staffHotel && o.status === "待确认",
-              ).length
-            }{" "}
-            笔待确认
-          </Badge>
+          <Button
+            appearance={state === "待确认" ? "primary" : "outline"}
+            size="small"
+            onClick={() => setState(state === "待确认" ? "all" : "待确认")}
+          >
+            {pendingCount > 0 && state !== "待确认" && (
+              <span className="pending-dot" aria-hidden="true" />
+            )}
+            {pendingCount} 笔待确认
+          </Button>
         }
       >
-        先处理即将到期的确认，再安排入住和退房。
+        先处理即将到期的待确认预订，再核验入住与退房。
       </Heading>
+      <div className="quick-filter-bar" role="group" aria-label="快捷状态筛选">
+        {(
+          [
+            ["all", "全部订单"],
+            ["待确认", `待确认 (${pendingCount})`],
+            ["已确认", "已确认"],
+            ["已入住", "已入住"],
+          ] as const
+        ).map(([val, label]) => (
+          <Button
+            key={val}
+            size="small"
+            appearance={state === val ? "primary" : "subtle"}
+            onClick={() => setState(val)}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
       <div className="filter-bar">
         <Field label="查找订单编号">
           <Input
@@ -944,23 +1173,32 @@ export function StaffOrders() {
             ))}
           </Select>
         </Field>
-        {connected && (
-          <>
-            <Field label="入住日起">
-              <Input
-                type="date"
-                value={start}
-                onChange={(_, d) => setStart(d.value)}
-              />
-            </Field>
-            <Field label="入住日止（不含）">
-              <Input
-                type="date"
-                value={end}
-                onChange={(_, d) => setEnd(d.value)}
-              />
-            </Field>
-          </>
+        <Field label="入住日起">
+          <FluentDatePicker
+            clearable
+            value={start}
+            rangeStart={isValidIsoDate(start) ? start : undefined}
+            rangeEnd={isValidIsoDate(end) ? end : undefined}
+            onChange={(next) => {
+              setStart(next);
+              if (next && end && end <= next) setEnd(addDays(next, 1));
+            }}
+          />
+        </Field>
+        <Field label="入住日止（不含）">
+          <FluentDatePicker
+            clearable
+            value={end}
+            minDate={isValidIsoDate(start) ? addDays(start, 1) : undefined}
+            rangeStart={isValidIsoDate(start) ? start : undefined}
+            rangeEnd={isValidIsoDate(end) ? end : undefined}
+            onChange={setEnd}
+          />
+        </Field>
+        {hasFilters && (
+          <Button appearance="subtle" onClick={resetFilters}>
+            重置筛选
+          </Button>
         )}
       </div>
       {queryError && <Notice intent="error">{queryError}</Notice>}
@@ -1005,10 +1243,7 @@ export function StaffOrders() {
                       {o.status === "待确认" && (
                         <div className="subtle">
                           剩{" "}
-                          {Math.max(
-                            0,
-                            Math.ceil((o.deadline - Date.now()) / 60000),
-                          )}{" "}
+                          {Math.max(0, Math.ceil((o.deadline - now) / 60000))}{" "}
                           分钟
                         </div>
                       )}
@@ -1022,8 +1257,7 @@ export function StaffOrders() {
                     {`尾号 ${o.phoneTail || o.phone?.slice(-4) || "—"}`}
                     {(connected
                       ? Boolean(
-                          o.terminalAt &&
-                          Date.now() >= o.terminalAt + 7 * 86400000,
+                          o.terminalAt && now >= o.terminalAt + 7 * 86400000,
                         )
                       : !o.phone) && " · 已到期"}
                   </td>
@@ -1038,7 +1272,16 @@ export function StaffOrders() {
           </table>
         </div>
       ) : (
-        <Empty title="没有符合条件的订单">请调整状态、房型或订单编号。</Empty>
+        <Empty
+          title="没有符合条件的订单"
+          action={
+            hasFilters ? (
+              <Button onClick={resetFilters}>重置筛选</Button>
+            ) : undefined
+          }
+        >
+          请调整状态、房型、日期或订单编号。
+        </Empty>
       )}
       {connected && (offset > 0 || orders.length === 20) && (
         <div className="button-row space-top">
@@ -1061,11 +1304,46 @@ export function StaffOrders() {
 export function HotelSettings() {
   const { data, update, audit, notify, staffHotel, connected, command } =
     useApp();
-  const hotel = data.hotels.find((h) => h.id === staffHotel)!;
-  const [draft, setDraft] = useState(hotel),
+  const hotel = data.hotels.find((h) => h.id === staffHotel);
+  const [draft, setDraft] = useState<Hotel>(() =>
+      hotel || {
+        id: staffHotel,
+        name: "",
+        city: "",
+        address: "",
+        district: "",
+        image: "",
+        caption: "",
+        description: "",
+        offset: 0,
+        enabled: true,
+        phone: "",
+      },
+    ),
     [error, setError] = useState(""),
     [editRoom, setEditRoom] = useState<Room | null>(null),
+    [isNewRoom, setIsNewRoom] = useState(false),
+    [roomCapacity, setRoomCapacity] = useState("2"),
+    [roomSize, setRoomSize] = useState("32"),
     [roomError, setRoomError] = useState("");
+  useEffect(() => {
+    if (hotel) setDraft(hotel);
+  }, [
+    hotel?.id,
+    hotel?.name,
+    hotel?.city,
+    hotel?.address,
+    hotel?.phone,
+    hotel?.description,
+  ]);
+  if (!hotel) return <Empty title="未找到所属酒店资料" />;
+  const openRoomModal = (room: Room, creating: boolean) => {
+    setRoomError("");
+    setIsNewRoom(creating);
+    setEditRoom(room);
+    setRoomCapacity(String(room.capacity));
+    setRoomSize(String(room.size));
+  };
   const save = async () => {
     if (
       ![draft.name, draft.city, draft.address, draft.phone].every((v) =>
@@ -1100,42 +1378,46 @@ export function HotelSettings() {
               city: draft.city.trim(),
               address: draft.address.trim(),
               phone: draft.phone.trim(),
+              description: draft.description.trim(),
             }
           : h,
       ),
     }));
     setError("");
-    audit("维护酒店资料", staffHotel, "更新名称、城市、地址或联系电话");
+    audit("维护酒店资料", staffHotel, "更新名称、城市、地址、联系电话或简介");
     notify("酒店资料已保存。");
   };
   return (
     <>
       <Heading
-        eyebrow={`${hotel.name} / 酒店与房型`}
-        title="让客人先读懂这家酒店"
+        eyebrow={`${hotel.name} · 酒店工作台`}
+        title="酒店与房型资料"
         action={
           <Button
+            appearance="primary"
             icon={<Add20Regular />}
             onClick={() => {
-              setRoomError("");
-              setEditRoom({
-                id: connected ? "" : `RM${Date.now()}`,
-                hotel: staffHotel,
-                name: "",
-                price: 46800,
-                capacity: 2,
-                size: 32,
-                bed: "1 张 1.8m 大床",
-                description: "",
-                enabled: true,
-              });
+              openRoomModal(
+                {
+                  id: connected ? "" : `RM${Date.now()}`,
+                  hotel: staffHotel,
+                  name: "",
+                  price: 46800,
+                  capacity: 2,
+                  size: 32,
+                  bed: "1 张 1.8m 大床",
+                  description: "",
+                  enabled: true,
+                },
+                true,
+              );
             }}
           >
             新增房型
           </Button>
         }
       >
-        维护所属酒店的基本信息与房型说明，预订按房型进行，不分配具体房号。
+        维护所属酒店的基本信息与房型说明；预订按房型进行，不分配具体房号。
       </Heading>
       <div className="settings-grid">
         <section className="settings-section">
@@ -1155,6 +1437,15 @@ export function HotelSettings() {
                 />
               </Field>
             ))}
+            <Field label="酒店简介" className="span-2">
+              <Textarea
+                value={draft.description}
+                onChange={(_, d) =>
+                  setDraft({ ...draft, description: d.value })
+                }
+                rows={3}
+              />
+            </Field>
           </div>
           {error && (
             <div className="space-top">
@@ -1186,12 +1477,7 @@ export function HotelSettings() {
                 </p>
                 <p className="muted">{r.description}</p>
               </div>
-              <Button
-                onClick={() => {
-                  setEditRoom({ ...r });
-                  setRoomError("");
-                }}
-              >
+              <Button onClick={() => openRoomModal({ ...r }, false)}>
                 编辑
               </Button>
             </article>
@@ -1203,27 +1489,36 @@ export function HotelSettings() {
       </div>
       <ConfirmDialog
         open={Boolean(editRoom)}
-        title="编辑房型资料"
+        title={isNewRoom ? "新增房型" : "编辑房型资料"}
         confirm="保存房型"
         onClose={() => setEditRoom(null)}
         onConfirm={async () => {
           if (!editRoom) return;
+          const cap = Number(roomCapacity.trim());
+          const area = Number(roomSize.trim());
           if (
             !editRoom.name.trim() ||
-            !Number.isInteger(editRoom.capacity) ||
-            editRoom.capacity < 1
+            !/^\d+$/.test(roomCapacity.trim()) ||
+            cap < 1 ||
+            cap > 100 ||
+            !/^\d+$/.test(roomSize.trim()) ||
+            area < 1 ||
+            area > 10000
           ) {
-            setRoomError("请填写房型名称，每间可住人数须为正整数。");
+            setRoomError(
+              "请填写房型名称，每间可住人数与房间面积须为正整数。",
+            );
             return;
           }
+          const nextRoom: Room = { ...editRoom, capacity: cap, size: area };
           if (connected) {
             const { name, capacity, size, bed, description, enabled } =
-              editRoom;
+              nextRoom;
             try {
               await command({
                 action: "room",
                 hotel: staffHotel,
-                room: editRoom.id,
+                room: nextRoom.id,
                 roomType: { name, capacity, size, bed, description, enabled },
               });
               setEditRoom(null);
@@ -1236,9 +1531,9 @@ export function HotelSettings() {
           if (
             hotelRooms(data, staffHotel).some(
               (r) =>
-                r.id !== editRoom.id &&
+                r.id !== nextRoom.id &&
                 r.enabled &&
-                r.name.trim() === editRoom.name.trim(),
+                r.name.trim() === nextRoom.name.trim(),
             )
           ) {
             setRoomError("本酒店已有同名有效房型。");
@@ -1246,17 +1541,17 @@ export function HotelSettings() {
           }
           update((current) => ({
             ...current,
-            rooms: current.rooms.some((r) => r.id === editRoom.id)
+            rooms: current.rooms.some((r) => r.id === nextRoom.id)
               ? current.rooms
-              : [...current.rooms, editRoom],
+              : [...current.rooms, nextRoom],
             roomDetails: {
               ...current.roomDetails,
-              [`${staffHotel}/${editRoom.id}`]: editRoom,
+              [`${staffHotel}/${nextRoom.id}`]: nextRoom,
             },
           }));
           audit(
             "维护房型",
-            `${staffHotel}/${editRoom.id}`,
+            `${staffHotel}/${nextRoom.id}`,
             "更新房型说明、容量或启停",
           );
           setEditRoom(null);
@@ -1272,24 +1567,27 @@ export function HotelSettings() {
               />
             </Field>
             <Field label="每间可住人数">
-              <Input
-                type="number"
+              <NumericInput
                 min={1}
+                max={100}
                 step={1}
-                value={String(editRoom.capacity)}
-                onChange={(_, d) =>
-                  setEditRoom({ ...editRoom, capacity: Number(d.value) })
-                }
+                suffix="人"
+                decreaseLabel="减少容量"
+                increaseLabel="增加容量"
+                value={roomCapacity}
+                onChange={setRoomCapacity}
               />
             </Field>
             <Field label="房间面积（m²）">
-              <Input
-                type="number"
+              <NumericInput
                 min={1}
-                value={String(editRoom.size)}
-                onChange={(_, d) =>
-                  setEditRoom({ ...editRoom, size: Number(d.value) })
-                }
+                max={10000}
+                step={1}
+                suffix="m²"
+                decreaseLabel="减小面积"
+                increaseLabel="增大面积"
+                value={roomSize}
+                onChange={setRoomSize}
               />
             </Field>
             <Field label="床型说明" className="span-2">
@@ -1366,8 +1664,18 @@ export function StatsPage() {
       current = false;
     };
   }, [connected, staffHotel]);
+  const statsDateErrors = useRef({ start: "", end: "" });
   const refresh = async () => {
-    if (end <= start || days(start, end).length > 90) {
+    if (statsDateErrors.current.start || statsDateErrors.current.end) {
+      setError(statsDateErrors.current.start || statsDateErrors.current.end);
+      return;
+    }
+    if (
+      !isValidIsoDate(start) ||
+      !isValidIsoDate(end) ||
+      end <= start ||
+      days(start, end).length > 90
+    ) {
       setError("请选取连续 1 至 90 个住宿日，结束日期不含。");
       return;
     }
@@ -1457,8 +1765,8 @@ export function StatsPage() {
   return (
     <>
       <Heading
-        eyebrow={`${hotelName} / 统计与导出`}
-        title="每一个间夜，都有来处"
+        eyebrow={`${hotelName} · 酒店工作台`}
+        title="统计与导出"
         action={
           <Button
             icon={<ArrowDownload20Regular />}
@@ -1473,14 +1781,36 @@ export function StatsPage() {
       </Heading>
       <div className="filter-bar">
         <Field label="住宿日起">
-          <Input
-            type="date"
+          <FluentDatePicker
             value={start}
-            onChange={(_, d) => setStart(d.value)}
+            rangeStart={isValidIsoDate(start) ? start : undefined}
+            rangeEnd={isValidIsoDate(end) ? end : undefined}
+            onValidityChange={(msg) => {
+              statsDateErrors.current.start = msg;
+            }}
+            onChange={(next) => {
+              setStart(next);
+              if (
+                isValidIsoDate(next) &&
+                (!isValidIsoDate(end) || end <= next || days(next, end).length > 90)
+              ) {
+                setEnd(addDays(next, 7));
+              }
+            }}
           />
         </Field>
         <Field label="住宿日止（不含）">
-          <Input type="date" value={end} onChange={(_, d) => setEnd(d.value)} />
+          <FluentDatePicker
+            value={end}
+            minDate={isValidIsoDate(start) ? addDays(start, 1) : undefined}
+            maxDate={isValidIsoDate(start) ? addDays(start, 90) : undefined}
+            rangeStart={isValidIsoDate(start) ? start : undefined}
+            rangeEnd={isValidIsoDate(end) ? end : undefined}
+            onValidityChange={(msg) => {
+              statsDateErrors.current.end = msg;
+            }}
+            onChange={setEnd}
+          />
         </Field>
         <Field label="房型">
           <Select value={room} onChange={(_, d) => setRoom(d.value)}>
@@ -1727,7 +2057,9 @@ function IncidentItem({
       </p>
       <ol className="timeline space-top">
         <li>
-          <time>{item.contactAt || "待登记联系记录"}</time>
+          <time>
+            {item.contactAt ? formatDisplayTime(item.contactAt) : "待登记联系记录"}
+          </time>
           {item.notes || "尚未开始处置。"}
         </li>
       </ol>
@@ -1793,6 +2125,7 @@ export function IncidentsPage() {
     [start, setStart] = useState(initialConditions.start),
     [end, setEnd] = useState(initialConditions.end),
     [error, setError] = useState("");
+  const incidentDateErrors = useRef({ start: "", end: "" });
   const incidents = data.incidents.filter(
       (i) => role === "admin" || i.hotel === staffHotel,
     ),
@@ -1809,10 +2142,17 @@ export function IncidentsPage() {
       activeStatuses.includes(o.status),
   );
   const createIncident = async () => {
+    if (incidentDateErrors.current.start || incidentDateErrors.current.end) {
+      setError(
+        incidentDateErrors.current.start || incidentDateErrors.current.end,
+      );
+      return;
+    }
     if (
       !title.trim() ||
       !reason.trim() ||
-      !start ||
+      !isValidIsoDate(start) ||
+      !isValidIsoDate(end) ||
       end <= start ||
       days(start, end).length > 90
     ) {
@@ -1893,15 +2233,27 @@ export function IncidentsPage() {
   return (
     <>
       <Heading
-        eyebrow={`${role === "staff" ? hotelName : "平台管理"} / 异常处置`}
-        title="把意外，一件件妥善处理"
+        eyebrow={role === "staff" ? `${hotelName} · 酒店工作台` : "平台管理台"}
+        title={role === "staff" ? "异常处置" : "异常事件管理"}
         action={
           <Button
             appearance="primary"
             icon={<Add20Regular />}
             onClick={() => {
-              setCreate(true);
+              const targetHotel =
+                role === "staff"
+                  ? staffHotel
+                  : hotel || data.hotels[0]?.id || "";
+              const targetRooms = hotelRooms(data, targetHotel);
+              incidentDateErrors.current = { start: "", end: "" };
+              setTitle("");
+              setReason("");
+              setHotel(targetHotel);
+              setRoom(connected ? "" : targetRooms[0]?.id || "garden");
+              setStart(initialConditions.start);
+              setEnd(initialConditions.end);
               setError("");
+              setCreate(true);
             }}
           >
             登记异常
@@ -2076,17 +2428,37 @@ export function IncidentsPage() {
             </Select>
           </Field>
           <Field label="影响住宿日起">
-            <Input
-              type="date"
+            <FluentDatePicker
               value={start}
-              onChange={(_, d) => setStart(d.value)}
+              rangeStart={isValidIsoDate(start) ? start : undefined}
+              rangeEnd={isValidIsoDate(end) ? end : undefined}
+              onValidityChange={(msg) => {
+                incidentDateErrors.current.start = msg;
+              }}
+              onChange={(nextStart) => {
+                setStart(nextStart);
+                if (
+                  isValidIsoDate(nextStart) &&
+                  (!isValidIsoDate(end) ||
+                    end <= nextStart ||
+                    days(nextStart, end).length > 90)
+                ) {
+                  setEnd(addDays(nextStart, 2));
+                }
+              }}
             />
           </Field>
           <Field label="影响住宿日止（不含）">
-            <Input
-              type="date"
+            <FluentDatePicker
               value={end}
-              onChange={(_, d) => setEnd(d.value)}
+              minDate={isValidIsoDate(start) ? addDays(start, 1) : undefined}
+              maxDate={isValidIsoDate(start) ? addDays(start, 90) : undefined}
+              rangeStart={isValidIsoDate(start) ? start : undefined}
+              rangeEnd={isValidIsoDate(end) ? end : undefined}
+              onValidityChange={(msg) => {
+                incidentDateErrors.current.end = msg;
+              }}
+              onChange={setEnd}
             />
           </Field>
         </div>
@@ -2125,11 +2497,12 @@ export function AuditPage() {
       (action === "all" || log.action === action) &&
       (actor === "all" || log.role === actor),
   );
+  const hasAuditFilters = object !== "" || action !== "all" || actor !== "all";
   return (
     <>
       <Heading
-        eyebrow={`${role === "staff" ? hotelName : "平台管理"} / 操作日志`}
-        title="让每一次处理，有迹可循"
+        eyebrow={role === "staff" ? `${hotelName} · 酒店工作台` : "平台管理台"}
+        title={role === "staff" ? "操作日志" : "平台审计记录"}
       >
         按对象、动作和操作者查阅追加记录；日志不提供修改入口，不展示完整联系方式。
       </Heading>
@@ -2158,12 +2531,24 @@ export function AuditPage() {
             <option>系统</option>
           </Select>
         </Field>
+        {hasAuditFilters && (
+          <Button
+            appearance="subtle"
+            onClick={() => {
+              setObject("");
+              setAction("all");
+              setActor("all");
+            }}
+          >
+            重置筛选
+          </Button>
+        )}
       </div>
       {logs.length ? (
         <section aria-label="审计记录">
           {logs.map((log) => (
             <article className="audit-entry" key={log.id}>
-              <time className="muted">{log.at}</time>
+              <time className="muted">{formatDisplayTime(log.at)}</time>
               <div>
                 <Text weight="semibold">{log.action}</Text>
                 <p>{log.detail}</p>
@@ -2241,8 +2626,8 @@ export function AdminHotels() {
   return (
     <>
       <Heading
-        eyebrow="平台管理 / 酒店"
-        title="每一家酒店，都有清晰的边界"
+        eyebrow="平台管理台"
+        title="酒店管理"
         action={
           <Button
             appearance="primary"
@@ -2285,6 +2670,7 @@ export function AdminHotels() {
         </article>
       ))}
       <ConfirmDialog
+        danger={Boolean(toggle?.enabled)}
         open={Boolean(toggle)}
         title={toggle?.enabled ? "停用这家酒店？" : "启用这家酒店？"}
         confirm={toggle?.enabled ? "确认停用" : "确认启用"}
@@ -2365,18 +2751,23 @@ export function AdminAccounts() {
     [password, setPassword] = useState(""),
     [error, setError] = useState(""),
     [toggle, setToggle] = useState("");
+  const toggleAccount = data.accounts.find((a) => a.id === toggle);
   return (
     <>
       <Heading
-        eyebrow="平台管理 / 账户与权限"
-        title="让职责，与酒店对应"
+        eyebrow="平台管理台"
+        title="账户与权限"
         action={
           <Button
             appearance="primary"
             icon={<Add20Regular />}
             onClick={() => {
-              setCreate(true);
+              setName("");
+              setUsername("");
+              setPassword("");
+              setHotel(hotel || data.hotels[0]?.id || "qt");
               setError("");
+              setCreate(true);
             }}
           >
             创建工作人员账户
@@ -2534,6 +2925,7 @@ export function AdminAccounts() {
         </div>
       </ConfirmDialog>
       <ConfirmDialog
+        danger={Boolean(toggleAccount?.enabled)}
         open={Boolean(toggle)}
         title="更新账户状态"
         confirm="确认更新"

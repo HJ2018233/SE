@@ -121,26 +121,67 @@ export const TODAY = new Intl.DateTimeFormat("sv-SE", {
   month: "2-digit",
   day: "2-digit",
 }).format(new Date());
+export function normalizeDigits(input: string) {
+  return input
+    .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/[。．]/g, ".");
+}
+export function daysInMonth(year: number, month: number) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+export function formatIsoDate(year: number, month: number, day: number) {
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+export function parseIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [y, m, d] = value.split("-").map(Number);
+  if (y < 1900 || y > 2200 || m < 1 || m > 12 || d < 1) return null;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (
+    dt.getUTCFullYear() !== y ||
+    dt.getUTCMonth() !== m - 1 ||
+    dt.getUTCDate() !== d
+  )
+    return null;
+  return { year: y, month: m, day: d };
+}
+export function isValidIsoDate(value: string) {
+  return parseIsoDate(value) !== null;
+}
 export function addDays(date: string, n: number) {
-  return new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(Date.parse(`${date}T00:00:00+08:00`) + n * 86400000));
+  const parsed = parseIsoDate(date);
+  if (!parsed) return date;
+  const dt = new Date(
+    Date.UTC(parsed.year, parsed.month - 1, parsed.day + n),
+  );
+  return formatIsoDate(
+    dt.getUTCFullYear(),
+    dt.getUTCMonth() + 1,
+    dt.getUTCDate(),
+  );
 }
 export function days(start: string, end: string) {
-  const count = Math.round((Date.parse(end) - Date.parse(start)) / 86400000);
+  const s = parseIsoDate(start);
+  const e = parseIsoDate(end);
+  if (!s || !e) return [];
+  const count = Math.round(
+    (Date.UTC(e.year, e.month - 1, e.day) -
+      Date.UTC(s.year, s.month - 1, s.day)) /
+      86400000,
+  );
   return Array.from(
     { length: Number.isFinite(count) ? Math.max(0, Math.min(count, 366)) : 0 },
     (_, i) => addDays(start, i),
   );
 }
 export function shortDate(date: string) {
-  const [, m, d] = date.split("-");
-  return `${Number(m)}月${Number(d)}日`;
+  const parsed = parseIsoDate(date);
+  if (!parsed) return date;
+  return `${parsed.month}月${parsed.day}日`;
 }
 export function weekday(date: string) {
+  const parsed = parseIsoDate(date);
+  if (!parsed) return "";
   return new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
     weekday: "short",
@@ -156,6 +197,22 @@ export function dateTime(value = Date.now()) {
     second: "2-digit",
     hour12: false,
   }).format(new Date(value));
+}
+export function formatDisplayTime(value: string) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}/.test(value)) return value;
+  const normalized = value.replace(/([+-]\d{2})$/, "$1:00");
+  const ms = Date.parse(normalized);
+  if (!Number.isFinite(ms)) return value;
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(ms));
 }
 export function money(cents: number) {
   return `¥${(cents / 100).toLocaleString("zh-CN", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
@@ -591,9 +648,12 @@ export function quote(
   }));
 }
 export function validConditions(c: Conditions): string {
-  const length = days(c.start, c.end).length;
   if (!c.city.trim()) return "请填写目的地城市。";
-  if (!c.start || !c.end || c.end <= c.start) return "离店日期应晚于入住日期。";
+  if (!c.start || !c.end) return "请填写完整的入住与离店日期。";
+  if (!isValidIsoDate(c.start) || !isValidIsoDate(c.end))
+    return "请输入有效的公历日期。";
+  const length = days(c.start, c.end).length;
+  if (c.end <= c.start) return "离店日期应晚于入住日期。";
   if (c.start < TODAY) return "入住日期不能早于今天。";
   if (length < 1 || length > 14) return "请选择连续 1 至 14 晚。";
   if (!Number.isInteger(c.rooms) || c.rooms < 1 || c.rooms > 3)

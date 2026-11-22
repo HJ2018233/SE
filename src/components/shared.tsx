@@ -22,17 +22,25 @@ import {
   Search24Regular,
 } from "@fluentui/react-icons";
 import {
+  addDays,
   days,
+  isValidIsoDate,
   money,
   shortDate,
+  TODAY,
   total,
   weekday,
   validConditions,
 } from "../model";
 import type { Conditions, Night, OrderStatus } from "../model";
 import { useApp } from "../context";
+import { FluentDatePicker } from "./DateField";
+import { NumericInput } from "./NumericInput";
 
-function FocusReturnSurface({ children }: PropsWithChildren) {
+function FocusReturnSurface({
+  children,
+  className,
+}: PropsWithChildren<{ className?: string }>) {
   const target = useRef(
     document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -49,7 +57,7 @@ function FocusReturnSurface({ children }: PropsWithChildren) {
       });
     };
   }, []);
-  return <DialogSurface>{children}</DialogSurface>;
+  return <DialogSurface className={className}>{children}</DialogSurface>;
 }
 
 export function Heading({
@@ -105,6 +113,23 @@ export function Status({ status }: { status: OrderStatus }) {
     </Badge>
   );
 }
+export function NightStateBadge({ state }: { state: string }) {
+  const color =
+    state === "预占"
+      ? "warning"
+      : state === "承诺"
+        ? "brand"
+        : state === "在住占用"
+          ? "success"
+          : state === "已消费"
+            ? "informative"
+            : "subtle";
+  return (
+    <Badge appearance="tint" color={color}>
+      {state}
+    </Badge>
+  );
+}
 export function Notice({
   children,
   intent = "info",
@@ -153,11 +178,13 @@ export function NightQuote({
   rooms = 1,
   compact = false,
   label = "逐晚报价",
+  changedDates,
 }: {
   nights: Night[];
   rooms?: number;
   compact?: boolean;
   label?: string;
+  changedDates?: Set<string>;
 }) {
   return (
     <section
@@ -171,15 +198,25 @@ export function NightQuote({
         </Text>
       </div>
       <ol className="night-strip">
-        {nights.map((n) => (
-          <li key={n.date}>
-            <span className="night-date">{shortDate(n.date)}</span>
-            <Text size={200} className="muted">
-              {weekday(n.date)}
-            </Text>
-            <Text weight="semibold">{money(n.price)}</Text>
-          </li>
-        ))}
+        {nights.map((n) => {
+          const changed = changedDates?.has(n.date);
+          return (
+            <li key={n.date} className={changed ? "changed" : undefined}>
+              <div className="night-head">
+                <span className="night-date">{shortDate(n.date)}</span>
+                {changed && (
+                  <Badge appearance="tint" color="warning" size="small">
+                    变动
+                  </Badge>
+                )}
+              </div>
+              <Text size={200} className="muted">
+                {weekday(n.date)}
+              </Text>
+              <Text weight="semibold">{money(n.price)}</Text>
+            </li>
+          );
+        })}
       </ol>
       <div className="quote-total">
         <span>
@@ -221,50 +258,124 @@ export function ConditionFields({
   value,
   onChange,
   filters = false,
+  showCity = true,
+  onDateErrorChange,
 }: {
   value: Conditions;
   onChange: (c: Conditions) => void;
   filters?: boolean;
+  showCity?: boolean;
+  onDateErrorChange?: (error: string) => void;
 }) {
   const { data: catalog } = useApp();
+  const [peopleText, setPeopleText] = useState(() =>
+    value.people > 0 ? String(value.people) : "",
+  );
+  const dateErrors = useRef({ start: "", end: "" });
+  useEffect(() => {
+    setPeopleText((curr) => {
+      if (value.people <= 0 && curr === "") return "";
+      if (Number(curr) === value.people && curr !== "") return curr;
+      return value.people > 0 ? String(value.people) : "";
+    });
+  }, [value.people]);
+
   const set = <K extends keyof Conditions>(key: K, data: Conditions[K]) =>
     onChange({ ...value, [key]: data });
+
+  const reportDateError = (field: "start" | "end", message: string) => {
+    dateErrors.current[field] = message;
+    onDateErrorChange?.(dateErrors.current.start || dateErrors.current.end);
+  };
+
+  const handleStartChange = (nextStart: string) => {
+    if (!isValidIsoDate(nextStart)) {
+      set("start", nextStart);
+      return;
+    }
+    const prevLength =
+      isValidIsoDate(value.start) && isValidIsoDate(value.end)
+        ? days(value.start, value.end).length
+        : 2;
+    const stayLength = prevLength >= 1 && prevLength <= 14 ? prevLength : 2;
+    let nextEnd = value.end;
+    if (
+      !isValidIsoDate(value.end) ||
+      value.end <= nextStart ||
+      days(nextStart, value.end).length > 14
+    ) {
+      nextEnd = addDays(nextStart, stayLength);
+    }
+    onChange({ ...value, start: nextStart, end: nextEnd });
+  };
+
+  const validStart = isValidIsoDate(value.start);
+  const validEnd = isValidIsoDate(value.end);
+  const nightCount =
+    validStart && validEnd && value.end > value.start
+      ? days(value.start, value.end).length
+      : 0;
+  const stayHint =
+    nightCount > 0 ? `共 ${nightCount} 晚（最多 14 晚）` : "最多连续 14 晚";
+
   return (
     <div className="form-grid">
-      <Field label="目的地城市" className="span-2">
-        <Input
-          value={value.city}
-          onChange={(_, d) => set("city", d.value)}
-          placeholder="输入城市"
-        />
-      </Field>
+      {showCity && (
+        <Field label="目的地城市" className="span-2">
+          <Input
+            value={value.city}
+            onChange={(_, d) => set("city", d.value)}
+            placeholder="输入城市"
+          />
+        </Field>
+      )}
       <Field label="入住日期">
-        <Input
-          type="date"
+        <FluentDatePicker
           value={value.start}
-          onChange={(_, d) => set("start", d.value)}
+          minDate={TODAY}
+          rangeStart={validStart ? value.start : undefined}
+          rangeEnd={validEnd ? value.end : undefined}
+          rangeHint={stayHint}
+          onValidityChange={(msg) => reportDateError("start", msg)}
+          onChange={handleStartChange}
         />
       </Field>
       <Field label="离店日期">
-        <Input
-          type="date"
+        <FluentDatePicker
           value={value.end}
-          onChange={(_, d) => set("end", d.value)}
+          minDate={validStart ? addDays(value.start, 1) : addDays(TODAY, 1)}
+          maxDate={validStart ? addDays(value.start, 14) : undefined}
+          rangeStart={validStart ? value.start : undefined}
+          rangeEnd={validEnd ? value.end : undefined}
+          rangeHint={stayHint}
+          onValidityChange={(msg) => reportDateError("end", msg)}
+          onChange={(nextEnd) => set("end", nextEnd)}
         />
       </Field>
       <Field label="入住人数">
-        <Input
-          type="number"
-          min={1}
-          max={6}
-          value={String(value.people)}
-          onChange={(_, d) => set("people", Number(d.value))}
+        <NumericInput
+          min={Math.max(1, value.rooms)}
+          max={30}
+          step={1}
+          suffix="人"
+          decreaseLabel="减 1 位旅客"
+          increaseLabel="加 1 位旅客"
+          value={peopleText}
+          onChange={(next) => {
+            setPeopleText(next);
+            set("people", next === "" ? 0 : Number(next));
+          }}
         />
       </Field>
       <Field label="房间数">
         <Select
           value={value.rooms}
-          onChange={(_, d) => set("rooms", Number(d.value))}
+          onChange={(_, d) => {
+            const nextRooms = Number(d.value);
+            const nextPeople = Math.max(value.people, nextRooms);
+            setPeopleText(String(nextPeople));
+            onChange({ ...value, rooms: nextRooms, people: nextPeople });
+          }}
         >
           {[1, 2, 3].map((n) => (
             <option key={n} value={n}>
@@ -289,20 +400,28 @@ export function ConditionFields({
             </Select>
           </Field>
           <Field label="最低每晚价（元）">
-            <Input
-              type="number"
+            <NumericInput
+              decimal
               min={0}
+              step={50}
+              prefix="¥"
+              decreaseLabel="下调最低限价"
+              increaseLabel="上调最低限价"
               value={value.min}
-              onChange={(_, d) => set("min", d.value)}
+              onChange={(next) => set("min", next)}
               placeholder="不限"
             />
           </Field>
           <Field label="最高每晚价（元）">
-            <Input
-              type="number"
+            <NumericInput
+              decimal
               min={0}
+              step={50}
+              prefix="¥"
+              decreaseLabel="下调最高限价"
+              increaseLabel="上调最高限价"
               value={value.max}
-              onChange={(_, d) => set("max", d.value)}
+              onChange={(next) => set("max", next)}
               placeholder="不限"
             />
           </Field>
@@ -326,6 +445,7 @@ export function ConditionsDialog({
 }) {
   const [draft, setDraft] = useState(value);
   const [error, setError] = useState("");
+  const [dateError, setDateError] = useState("");
   return (
     <Dialog
       open={open}
@@ -337,7 +457,7 @@ export function ConditionsDialog({
         <FocusReturnSurface>
           <DialogBody>
             <DialogTitle>
-              {filters ? "筛选你的住宿" : "这次，想住在哪里？"}
+              {filters ? "筛选住宿条件" : "修改住宿条件"}
             </DialogTitle>
             <DialogContent>
               <p className="muted">
@@ -345,7 +465,14 @@ export function ConditionsDialog({
               </p>
               <ConditionFields
                 value={draft}
-                onChange={setDraft}
+                onChange={(next) => {
+                  setDraft(next);
+                  if (error) setError("");
+                }}
+                onDateErrorChange={(msg) => {
+                  setDateError(msg);
+                  if (!msg && error) setError("");
+                }}
                 filters={filters}
               />
               {error && (
@@ -359,6 +486,10 @@ export function ConditionsDialog({
               <Button
                 appearance="primary"
                 onClick={() => {
+                  if (dateError) {
+                    setError(dateError);
+                    return;
+                  }
                   const message = validConditions(draft);
                   if (message) {
                     setError(message);
@@ -388,6 +519,7 @@ export function ConfirmDialog({
   onConfirm,
   danger = false,
   disabled = false,
+  wide = false,
 }: PropsWithChildren<{
   open: boolean;
   title: string;
@@ -396,6 +528,7 @@ export function ConfirmDialog({
   onConfirm: () => void | Promise<void>;
   danger?: boolean;
   disabled?: boolean;
+  wide?: boolean;
 }>) {
   const running = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -418,7 +551,7 @@ export function ConfirmDialog({
       }}
     >
       {open ? (
-        <FocusReturnSurface>
+        <FocusReturnSurface className={wide ? "wide-dialog" : undefined}>
           <DialogBody>
             <DialogTitle>{title}</DialogTitle>
             <DialogContent>{children}</DialogContent>
