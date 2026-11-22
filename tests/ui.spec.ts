@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import type { DemoData } from "../src/model";
 
 const routes = [
   "/explore",
@@ -39,18 +40,24 @@ async function bookForm(page) {
   await page.getByRole("checkbox").check();
 }
 
-for (const width of [320, 390, 768, 1440]) {
+for (const width of [320, 390, 768, 1440, 2560, 3840]) {
   test(`三类角色全部页面在 ${width}px 无页面横向溢出`, async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.setViewportSize({ width, height: width < 600 ? 844 : 1000 });
+    await page.setViewportSize({
+      width,
+      height: width >= 2560 ? (width * 9) / 16 : width < 600 ? 844 : 1000,
+    });
     for (const route of routes) {
       await open(page, route);
       const metrics = await page.evaluate(() => ({
-        width: innerWidth,
+        width: document.documentElement.clientWidth,
         scroll: document.documentElement.scrollWidth,
+        main: document.querySelector("main")!.clientWidth,
       }));
       expect(metrics.scroll, route).toBeLessThanOrEqual(metrics.width + 1);
+      if (width >= 2560)
+        expect(metrics.main, route).toBeGreaterThanOrEqual(metrics.width - 1);
     }
     expect(errors).toEqual([]);
   });
@@ -211,6 +218,60 @@ test("酒店接单、联系方式按需查看和审计脱敏", async ({ page }) 
       .getByText("查看完整联系方式", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("13800000000", { exact: false })).toHaveCount(0);
+});
+
+test("长订单号和 14 晚报价在短窗口中可完整查看并接单", async ({ page }) => {
+  const id = "HB1234567890abcdef1234567890abcdef";
+  await page.setViewportSize({ width: 640, height: 520 });
+  await open(page, "/staff/orders");
+  await page.evaluate((orderId) => {
+    const key = "hotel-ui-demo-v1";
+    const data = JSON.parse(localStorage.getItem(key)!) as DemoData;
+    const order = data.orders.find((item) => item.id === "HB20260002")!;
+    order.id = orderId;
+    order.end = new Date(Date.parse(order.start) + 14 * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    order.nights = Array.from({ length: 14 }, (_, index) => ({
+      date: new Date(Date.parse(order.start) + index * 86_400_000)
+        .toISOString()
+        .slice(0, 10),
+      price: 49800,
+    }));
+    order.history.unshift({ time: "11-21 10:05", text: "长订单滚动检查" });
+    localStorage.setItem(key, JSON.stringify(data));
+  }, id);
+  await page.reload();
+
+  const openOrder = page
+    .getByRole("row")
+    .filter({ hasText: id })
+    .getByRole("button", { name: "查看与处理" });
+  await openOrder.evaluate((button) => {
+    window.scrollTo({
+      top: scrollY + button.getBoundingClientRect().top - innerHeight / 2,
+      behavior: "instant",
+    });
+  });
+  await expect(openOrder).toBeInViewport({ ratio: 0.99 });
+  await openOrder.click();
+  await page.setViewportSize({ width: 320, height: 460 });
+  const drawer = page.getByRole("dialog");
+  const details = drawer.getByRole("region", { name: "订单明细" });
+  const confirm = drawer.getByRole("button", { name: "确认接单", exact: true });
+  await expect(drawer.getByText(id, { exact: true })).toBeInViewport({
+    ratio: 0.99,
+  });
+  await expect(
+    drawer.getByRole("button", { name: "关闭订单详情" }),
+  ).toBeInViewport();
+  await expect(drawer.getByText("入住 — 离店")).toBeInViewport();
+  await expect(confirm).toBeInViewport();
+  await details.press("End");
+  await expect(details.getByText("长订单滚动检查")).toBeInViewport();
+  await expect(confirm).toBeInViewport();
+  await confirm.click();
+  await expect(drawer.getByText("已确认", { exact: true })).toBeVisible();
 });
 
 test("异常联系中保留原单，联系齐备后按酒店原因取消", async ({ page }) => {

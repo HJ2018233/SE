@@ -31,6 +31,7 @@ a {
   color: var(--colorBrandForegroundLink);
 }
 body .app-shell {
+  --page-gutter: var(--spacingHorizontalXXXL);
   min-height: 100vh;
   color: var(--colorNeutralForeground1);
   background: var(--colorNeutralBackground1);
@@ -40,10 +41,9 @@ body .app-header {
   background: var(--colorNeutralBackground1);
 }
 body .header-inner {
-  max-width: 1440px;
   min-height: 80px;
   margin: auto;
-  padding: 0 var(--spacingHorizontalXXXL);
+  padding: 0 var(--page-gutter);
   display: flex;
   align-items: center;
   gap: var(--spacingHorizontalXXXL);
@@ -78,17 +78,15 @@ body .compact-navigation {
   display: none;
 }
 body .main-content {
-  max-width: 1440px;
   margin: 0 auto;
-  padding: var(--spacingVerticalXXXL) var(--spacingHorizontalXXXL)
+  padding: var(--spacingVerticalXXXL) var(--page-gutter)
     calc(var(--spacingVerticalXXXL) * 2);
   min-height: calc(100vh - 160px);
   outline: none;
 }
 body .app-footer {
-  max-width: 1440px;
   margin: auto;
-  padding: var(--spacingVerticalL) var(--spacingHorizontalXXXL);
+  padding: var(--spacingVerticalL) var(--page-gutter);
   border-top: var(--strokeWidthThin) solid var(--colorNeutralStroke2);
   color: var(--colorNeutralForeground3);
   font-size: var(--fontSizeBase200);
@@ -762,13 +760,38 @@ body .table-wrap .numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+body .staff-order-table {
+  overflow-x: auto;
+}
+body .staff-order-id {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+body .order-drawer {
+  width: min(592px, 100%);
+  overflow: clip;
+}
+body .order-drawer-header,
+body .order-drawer-actions {
+  flex: 0 0 auto;
+}
+body .order-drawer-body {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-bottom: var(--spacingVerticalXXL);
+}
+body .order-drawer-actions {
+  flex-wrap: wrap;
+  border-top: var(--strokeWidthThin) solid var(--colorNeutralStroke2);
+  padding-top: var(--spacingVerticalL);
+}
 body .drawer-content {
   display: flex;
   flex-direction: column;
   gap: var(--spacingVerticalXL);
-}
-body .fui-DrawerSurface {
-  width: min(560px, 100vw);
+  overflow-wrap: anywhere;
 }
 body .summary-band {
   display: flex;
@@ -895,6 +918,24 @@ body .mobile-only {
 }
 body .fui-DialogContent {
   padding-bottom: var(--spacingVerticalS);
+}
+@media (min-width: 1600px) {
+  body .app-shell {
+    --page-gutter: clamp(40px, 3.125vw, 96px);
+  }
+  body .hero {
+    gap: clamp(64px, 4vw, 144px);
+  }
+  body .hero-title {
+    font-size: clamp(3.5rem, 3.125vw, 6rem);
+    line-height: 1.08;
+  }
+  body .hero-description {
+    font-size: var(--fontSizeBase400);
+  }
+  body .feature-image img {
+    max-height: min(62vh, 1000px);
+  }
 }
 @media (max-width: 1200px) {
   body .header-inner {

@@ -366,6 +366,54 @@ export function CalendarPage() {
   );
 }
 
+function OrderDrawer({
+  order,
+  onClose,
+  readOnly = false,
+  incidentId,
+}: {
+  order?: Order;
+  onClose: () => void;
+  readOnly?: boolean;
+  incidentId?: string;
+}) {
+  return (
+    <OverlayDrawer
+      className="order-drawer"
+      position="end"
+      size="medium"
+      open={Boolean(order)}
+      onOpenChange={(_, data) => {
+        if (!data.open) onClose();
+      }}
+    >
+      <DrawerHeader className="order-drawer-header">
+        <DrawerHeaderTitle
+          action={
+            <Button
+              appearance="subtle"
+              icon={<Dismiss20Regular />}
+              aria-label={readOnly ? "关闭关联订单" : "关闭订单详情"}
+              onClick={onClose}
+            />
+          }
+        >
+          {readOnly ? "关联订单" : "订单详情"}
+        </DrawerHeaderTitle>
+        <Text className="order-number">{order?.id}</Text>
+      </DrawerHeader>
+      {order && (
+        <OrderInspector
+          key={order.id}
+          order={order}
+          readOnly={readOnly}
+          incidentId={incidentId}
+        />
+      )}
+    </OverlayDrawer>
+  );
+}
+
 function OrderInspector({
   order,
   readOnly = false,
@@ -392,10 +440,16 @@ function OrderInspector({
     order.incident &&
     !data.incidents.find((i) => i.id === order.incident)?.closed,
   );
-  const now = Date.now(),
-    canCheckin =
-      now >= Date.parse(`${order.start}T14:00:00+08:00`) &&
-      now < Date.parse(`${order.end}T12:00:00+08:00`);
+  const now = Date.now();
+  const checkinEnds = Date.parse(`${order.end}T12:00:00+08:00`);
+  const canCheckin =
+    now >= Date.parse(`${order.start}T14:00:00+08:00`) && now < checkinEnds;
+  const canProcess =
+    !readOnly &&
+    (!blocked || (connected && order.status === "已入住")) &&
+    (order.status === "待确认" ||
+      order.status === "已确认" ||
+      order.status === "已入住");
   const expiredPrivacy = connected
     ? Boolean(order.terminalAt && now >= order.terminalAt + 7 * 86400000)
     : !order.phone;
@@ -482,99 +536,116 @@ function OrderInspector({
     notify("处理结果已更新。");
   };
   return (
-    <div className="drawer-content">
-      <div className="order-title">
-        <Text size={600} weight="semibold">
-          {hotel.name}
-        </Text>
-        <Status status={order.status} />
-      </div>
-      <Text>{room.name}</Text>
-      {blocked && (
-        <Notice intent="warning">
-          订单关联 {order.incident}，请从异常事件逐单处置；当前占用继续保留。
-        </Notice>
-      )}
-      {order.status === "待确认" && (
-        <Notice>
-          确认截止 {dateTime(order.deadline)}，约剩{" "}
-          {Math.max(0, Math.ceil((order.deadline - Date.now()) / 60000))} 分钟。
-        </Notice>
-      )}
-      <div className="facts">
-        <div className="fact">
-          <span className="fact-label">入住 — 离店</span>
-          <div className="fact-value">
-            {shortDate(order.start)} — {shortDate(order.end)}
-          </div>
-        </div>
-        <div className="fact">
-          <span className="fact-label">人数与房量</span>
-          <div className="fact-value">
-            {order.people} 人 · {order.rooms} 间
-          </div>
-        </div>
-        <div className="fact">
-          <span className="fact-label">联系人</span>
-          <div className="fact-value">
-            {revealed && !connected
-              ? order.name
-              : expiredPrivacy
-                ? "已到期清理"
-                : "按需查看"}
-          </div>
-        </div>
-        <div className="fact">
-          <span className="fact-label">联系手机</span>
-          <div className="fact-value">
-            {expiredPrivacy
-              ? "完整信息已到期"
-              : revealed
-                ? connected
-                  ? fullPhone
-                  : order.phone
-                : `尾号 ${order.phoneTail || order.phone?.slice(-4) || "—"}`}
-          </div>
-        </div>
-      </div>
-      <Button
-        icon={<Eye20Regular />}
-        disabled={expiredPrivacy || (role === "admin" && !related)}
-        onClick={() => {
-          setPurpose(connected && role === "admin" ? "incident" : "");
-          setError("");
-          setContactOpen(true);
-        }}
+    <>
+      <DrawerBody
+        className="order-drawer-body"
+        role="region"
+        aria-label="订单明细"
+        tabIndex={0}
       >
-        登记用途并查看联系方式
-      </Button>
-      {role === "admin" && !related && (
-        <Text size={200} className="muted">
-          管理员仅可为已关联的异常调查查看完整联系方式。
-        </Text>
-      )}
-      <NightQuote
-        nights={order.nights}
-        rooms={order.rooms}
-        label="保存的逐晚报价"
-      />
-      <section>
-        <Text as="h3" size={400} weight="semibold">
-          处理记录
-        </Text>
-        <ol className="timeline space-top">
-          {[...order.history].reverse().map((e, i) => (
-            <li key={i}>
-              <time>{e.time}</time>
-              {e.text}
-            </li>
-          ))}
-        </ol>
-      </section>
-      {!readOnly && (!blocked || (connected && order.status === "已入住")) && (
-        <div className="stack">
+        <div className="drawer-content">
+          <div className="order-title">
+            <Text size={600} weight="semibold">
+              {hotel.name}
+            </Text>
+            <Status status={order.status} />
+          </div>
+          <Text>{room.name}</Text>
+          {blocked && (
+            <Notice intent="warning">
+              订单关联 {order.incident}
+              ，请从异常事件逐单处置；当前占用继续保留。
+            </Notice>
+          )}
           {order.status === "待确认" && (
-            <div className="button-row">
+            <Notice>
+              确认截止 {dateTime(order.deadline)}，约剩{" "}
+              {Math.max(0, Math.ceil((order.deadline - Date.now()) / 60000))}{" "}
+              分钟。
+            </Notice>
+          )}
+          <div className="facts">
+            <div className="fact">
+              <span className="fact-label">入住 — 离店</span>
+              <div className="fact-value">
+                {shortDate(order.start)} — {shortDate(order.end)}
+              </div>
+            </div>
+            <div className="fact">
+              <span className="fact-label">人数与房量</span>
+              <div className="fact-value">
+                {order.people} 人 · {order.rooms} 间
+              </div>
+            </div>
+            <div className="fact">
+              <span className="fact-label">联系人</span>
+              <div className="fact-value">
+                {revealed && !connected
+                  ? order.name
+                  : expiredPrivacy
+                    ? "已到期清理"
+                    : "按需查看"}
+              </div>
+            </div>
+            <div className="fact">
+              <span className="fact-label">联系手机</span>
+              <div className="fact-value">
+                {expiredPrivacy
+                  ? "完整信息已到期"
+                  : revealed
+                    ? connected
+                      ? fullPhone
+                      : order.phone
+                    : `尾号 ${order.phoneTail || order.phone?.slice(-4) || "—"}`}
+              </div>
+            </div>
+          </div>
+          <Button
+            icon={<Eye20Regular />}
+            disabled={expiredPrivacy || (role === "admin" && !related)}
+            onClick={() => {
+              setPurpose(connected && role === "admin" ? "incident" : "");
+              setError("");
+              setContactOpen(true);
+            }}
+          >
+            登记用途并查看联系方式
+          </Button>
+          {role === "admin" && !related && (
+            <Text size={200} className="muted">
+              管理员仅可为已关联的异常调查查看完整联系方式。
+            </Text>
+          )}
+          <NightQuote
+            nights={order.nights}
+            rooms={order.rooms}
+            label="保存的逐晚报价"
+          />
+          <section>
+            <Text as="h3" size={400} weight="semibold">
+              处理记录
+            </Text>
+            <ol className="timeline space-top">
+              {[...order.history].reverse().map((e, i) => (
+                <li key={i}>
+                  <time>{e.time}</time>
+                  {e.text}
+                </li>
+              ))}
+            </ol>
+          </section>
+          {canProcess && order.status === "已确认" && !canCheckin && (
+            <Text className="muted">
+              入住日 14:00 起、离店日 12:00
+              前可办理。超出窗口请联系顾客并登记实际情况。
+            </Text>
+          )}
+        </div>
+      </DrawerBody>
+      {canProcess && (
+        <DrawerFooter className="order-drawer-actions">
+          {order.status === "待确认" && (
+            <>
               <Button
                 appearance="primary"
                 disabled={order.deadline <= now || busy}
@@ -591,7 +662,7 @@ function OrderInspector({
               >
                 拒绝并说明原因
               </Button>
-            </div>
+            </>
           )}
           {order.status === "已确认" && (
             <>
@@ -605,24 +676,17 @@ function OrderInspector({
               >
                 办理入住
               </Button>
-              {!canCheckin && (
-                <Text className="muted">
-                  入住日 14:00 起、离店日 12:00
-                  前可办理；超出窗口请联系顾客并按实际情况处置。
-                </Text>
+              {connected && now >= checkinEnds && (
+                <Button
+                  onClick={() => {
+                    setReason("");
+                    setError("");
+                    setAction("已取消");
+                  }}
+                >
+                  登记未到店并取消
+                </Button>
               )}
-              {connected &&
-                now >= Date.parse(`${order.end}T12:00:00+08:00`) && (
-                  <Button
-                    onClick={() => {
-                      setReason("");
-                      setError("");
-                      setAction("已取消");
-                    }}
-                  >
-                    登记未到店并取消
-                  </Button>
-                )}
             </>
           )}
           {order.status === "已入住" && (
@@ -636,7 +700,7 @@ function OrderInspector({
               办理退房
             </Button>
           )}
-        </div>
+        </DrawerFooter>
       )}
       <ConfirmDialog
         open={Boolean(action)}
@@ -654,15 +718,20 @@ function OrderInspector({
             ? "登记实际退房"
             : action === "已入住"
               ? "确认入住"
-              : "提交拒绝结果"
+              : action === "已取消"
+                ? "确认取消订单"
+                : "提交拒绝结果"
         }
         onClose={() => setAction(null)}
         onConfirm={() => {
           if (action) return transition(action);
         }}
       >
-        {action === "已拒绝" ? (
-          <Field label="拒绝原因" required>
+        {action === "已拒绝" || action === "已取消" ? (
+          <Field
+            label={action === "已取消" ? "未到店原因" : "拒绝原因"}
+            required
+          >
             <Textarea value={reason} onChange={(_, d) => setReason(d.value)} />
           </Field>
         ) : action === "已入住" ? (
@@ -765,7 +834,7 @@ function OrderInspector({
           </div>
         )}
       </ConfirmDialog>
-    </div>
+    </>
   );
 }
 
@@ -896,7 +965,7 @@ export function StaffOrders() {
       </div>
       {queryError && <Notice intent="error">{queryError}</Notice>}
       {orders.length ? (
-        <div className="table-wrap">
+        <div className="table-wrap staff-order-table">
           <table>
             <thead>
               <tr>
@@ -912,7 +981,7 @@ export function StaffOrders() {
               {orders.map((o) => (
                 <tr key={o.id}>
                   <td data-label="订单 / 房型">
-                    <div>{o.id}</div>
+                    <div className="staff-order-id">{o.id}</div>
                     <Text size={200} className="muted">
                       {
                         hotelRooms(data, staffHotel).find(
@@ -984,31 +1053,7 @@ export function StaffOrders() {
           </Button>
         </div>
       )}
-      <OverlayDrawer
-        position="end"
-        open={Boolean(current)}
-        onOpenChange={(_, d) => {
-          if (!d.open) setSelected("");
-        }}
-      >
-        <DrawerHeader>
-          <DrawerHeaderTitle
-            action={
-              <Button
-                appearance="subtle"
-                icon={<Dismiss20Regular />}
-                aria-label="关闭订单详情"
-                onClick={() => setSelected("")}
-              />
-            }
-          >
-            订单 {current?.id}
-          </DrawerHeaderTitle>
-        </DrawerHeader>
-        <DrawerBody>
-          {current && <OrderInspector key={current.id} order={current} />}
-        </DrawerBody>
-      </OverlayDrawer>
+      <OrderDrawer order={current} onClose={() => setSelected("")} />
     </>
   );
 }
@@ -2051,38 +2096,12 @@ export function IncidentsPage() {
         </p>
         {error && <Notice intent="error">{error}</Notice>}
       </ConfirmDialog>
-      <OverlayDrawer
-        position="end"
-        open={Boolean(current)}
-        onOpenChange={(_, d) => {
-          if (!d.open) setViewOrder("");
-        }}
-      >
-        <DrawerHeader>
-          <DrawerHeaderTitle
-            action={
-              <Button
-                appearance="subtle"
-                icon={<Dismiss20Regular />}
-                aria-label="关闭关联订单"
-                onClick={() => setViewOrder("")}
-              />
-            }
-          >
-            关联订单 {current?.id}
-          </DrawerHeaderTitle>
-        </DrawerHeader>
-        <DrawerBody>
-          {current && (
-            <OrderInspector
-              incidentId={incident?.id}
-              key={current.id}
-              order={current}
-              readOnly
-            />
-          )}
-        </DrawerBody>
-      </OverlayDrawer>
+      <OrderDrawer
+        order={current}
+        onClose={() => setViewOrder("")}
+        incidentId={incident?.id}
+        readOnly
+      />
     </>
   );
 }
