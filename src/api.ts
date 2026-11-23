@@ -2,6 +2,7 @@ import type {
   Conditions,
   DemoData,
   Hotel,
+  HotelPhoto,
   Incident,
   Night,
   Order,
@@ -13,6 +14,12 @@ import type {
 export const prototype = import.meta.env.MODE === "prototype";
 const base = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const tokenKey = "hotel-session-v2";
+
+export function resolveAssetUrl(url?: string): string {
+  if (!url) return "";
+  if (url.startsWith("/api/") && base) return `${base}${url}`;
+  return url;
+}
 
 export type Identity = {
   id: string;
@@ -58,11 +65,14 @@ export type Command = {
   roomType?: Partial<Omit<Room, "price">>;
   incident?: Partial<Incident>;
   user?: Credentials;
+  photoOrder?: string[];
+  photoUrl?: string;
 };
 export type CommandResult = {
   id?: string;
   order?: Order;
   phone?: string;
+  photo?: HotelPhoto;
   problem?: { code: string; message: string; nights?: Night[] };
 };
 type State = DemoData & { account: Identity | null };
@@ -209,6 +219,46 @@ export const api = {
     ),
   stats: (start: string, end: string, room: string) =>
     request<Stats>(query("/stats", { start, end, room })),
+  uploadPhoto: async (
+    hotel: string,
+    file: Blob,
+    filename: string,
+    caption = "",
+  ): Promise<HotelPhoto> => {
+    const form = new FormData();
+    form.set("hotel", hotel);
+    form.set("caption", caption);
+    form.set("file", file, filename);
+    const headers = new Headers({ Accept: "application/json" });
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(`${base}/api/photos`, {
+      method: "POST",
+      headers,
+      body: form,
+      cache: "no-store",
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.headers.get("content-type")?.includes("application/json")) {
+      throw new ApiError(
+        response.status,
+        "transport",
+        "无法读取服务器响应，请检查服务地址",
+      );
+    }
+    const data = await response.json();
+    if (!response.ok) {
+      throw new ApiError(
+        response.status,
+        data.code,
+        data.message,
+        data.nights,
+        data.order,
+        data.date,
+      );
+    }
+    return data as HotelPhoto;
+  },
 };
 
 export function operationKey() {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { PropsWithChildren, ReactNode } from "react";
 import {
   Badge,
@@ -200,8 +200,18 @@ export function NightQuote({
       <ol className="night-strip">
         {nights.map((n) => {
           const changed = changedDates?.has(n.date);
+          const wd = weekday(n.date);
+          const isWeekend = wd === "周六" || wd === "周日";
           return (
-            <li key={n.date} className={changed ? "changed" : undefined}>
+            <li
+              key={n.date}
+              className={[
+                changed ? "changed" : "",
+                isWeekend ? "weekend" : "",
+              ]
+                .filter(Boolean)
+                .join(" ") || undefined}
+            >
               <div className="night-head">
                 <span className="night-date">{shortDate(n.date)}</span>
                 {changed && (
@@ -211,7 +221,7 @@ export function NightQuote({
                 )}
               </div>
               <Text size={200} className="muted">
-                {weekday(n.date)}
+                {wd}
               </Text>
               <Text weight="semibold">{money(n.price)}</Text>
             </li>
@@ -268,6 +278,14 @@ export function ConditionFields({
   onDateErrorChange?: (error: string) => void;
 }) {
   const { data: catalog } = useApp();
+  const cityListId = useId();
+  const availableCities = useMemo(() => {
+    const set = new Set<string>();
+    for (const h of catalog.hotels) {
+      if (h.enabled && h.city.trim()) set.add(h.city.trim());
+    }
+    return [...set];
+  }, [catalog.hotels]);
   const [peopleText, setPeopleText] = useState(() =>
     value.people > 0 ? String(value.people) : "",
   );
@@ -317,6 +335,11 @@ export function ConditionFields({
       : 0;
   const stayHint =
     nightCount > 0 ? `共 ${nightCount} 晚（最多 14 晚）` : "最多连续 14 晚";
+  const trimmedCity = value.city.trim();
+  const cityMatched =
+    !availableCities.length ||
+    !trimmedCity ||
+    availableCities.some((c) => c === trimmedCity || c.includes(trimmedCity));
 
   return (
     <div className="form-grid">
@@ -326,7 +349,39 @@ export function ConditionFields({
             value={value.city}
             onChange={(_, d) => set("city", d.value)}
             placeholder="输入城市"
+            list={availableCities.length ? cityListId : undefined}
           />
+          {availableCities.length > 0 && (
+            <>
+              <datalist id={cityListId}>
+                {availableCities.map((city) => (
+                  <option key={city} value={city} />
+                ))}
+              </datalist>
+              <div
+                className="city-suggestions"
+                role="group"
+                aria-label="可订城市建议"
+              >
+                {availableCities.map((city) => (
+                  <Button
+                    key={city}
+                    type="button"
+                    size="small"
+                    appearance={trimmedCity === city ? "primary" : "outline"}
+                    onClick={() => set("city", city)}
+                  >
+                    {city}
+                  </Button>
+                ))}
+              </div>
+              {trimmedCity && !cityMatched && (
+                <Text size={200} className="muted city-hint">
+                  当前可订城市：{availableCities.join("、")}
+                </Text>
+              )}
+            </>
+          )}
         </Field>
       )}
       <Field label="入住日期">

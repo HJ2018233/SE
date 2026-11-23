@@ -87,17 +87,24 @@ func (a account) mayManage(hotel string) bool {
 	return a.Role == admin || (a.Role == staff && a.Hotel == hotel)
 }
 
+type hotelPhoto struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Caption string `json:"caption"`
+}
+
 type hotel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	City        string `json:"city"`
-	Address     string `json:"address"`
-	Phone       string `json:"phone"`
-	District    string `json:"district"`
-	Image       string `json:"image"`
-	Caption     string `json:"caption"`
-	Description string `json:"description"`
-	Enabled     bool   `json:"enabled"`
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	City        string       `json:"city"`
+	Address     string       `json:"address"`
+	Phone       string       `json:"phone"`
+	District    string       `json:"district"`
+	Image       string       `json:"image"`
+	Caption     string       `json:"caption"`
+	Description string       `json:"description"`
+	Enabled     bool         `json:"enabled"`
+	Photos      []hotelPhoto `json:"photos"`
 }
 
 type room struct {
@@ -211,27 +218,30 @@ type snapshot struct {
 }
 
 type command struct {
-	Action   string           `json:"action"`
-	Key      string           `json:"key,omitempty"`
-	Hotel    string           `json:"hotel,omitempty"`
-	Room     string           `json:"room,omitempty"`
-	ID       string           `json:"id,omitempty"`
-	Note     string           `json:"note,omitempty"`
-	Mode     string           `json:"mode,omitempty"`
-	Enabled  bool             `json:"enabled,omitempty"`
-	Booking  booking          `json:"booking,omitempty"`
-	Calendar []calendarChange `json:"calendar,omitempty"`
-	Property hotel            `json:"property,omitempty"`
-	RoomType room             `json:"roomType,omitempty"`
-	Incident incident         `json:"incident,omitempty"`
-	User     credentials      `json:"user,omitempty"`
+	Action     string           `json:"action"`
+	Key        string           `json:"key,omitempty"`
+	Hotel      string           `json:"hotel,omitempty"`
+	Room       string           `json:"room,omitempty"`
+	ID         string           `json:"id,omitempty"`
+	Note       string           `json:"note,omitempty"`
+	Mode       string           `json:"mode,omitempty"`
+	Enabled    bool             `json:"enabled,omitempty"`
+	Booking    booking          `json:"booking,omitempty"`
+	Calendar   []calendarChange `json:"calendar,omitempty"`
+	Property   hotel            `json:"property,omitempty"`
+	RoomType   room             `json:"roomType,omitempty"`
+	Incident   incident         `json:"incident,omitempty"`
+	User       credentials      `json:"user,omitempty"`
+	PhotoOrder []string         `json:"photoOrder,omitempty"`
+	PhotoURL   string           `json:"photoUrl,omitempty"`
 }
 
 type result struct {
-	ID      string   `json:"id,omitempty"`
-	Order   *order   `json:"order,omitempty"`
-	Phone   string   `json:"phone,omitempty"`
-	Problem *problem `json:"problem,omitempty"`
+	ID      string      `json:"id,omitempty"`
+	Order   *order      `json:"order,omitempty"`
+	Phone   string      `json:"phone,omitempty"`
+	Photo   *hotelPhoto `json:"photo,omitempty"`
+	Problem *problem    `json:"problem,omitempty"`
 }
 
 func dateAt(t time.Time) string { return t.In(beijing).Format(dateLayout) }

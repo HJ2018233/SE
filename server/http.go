@@ -122,6 +122,43 @@ func (s *service) routes(static string, corsOrigins []string) http.Handler {
 		value, err := s.execute(r.Context(), authToken(r), in)
 		send(w, value, err)
 	})
+	mux.HandleFunc("POST /api/photos", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxPhotoBytes+64*1024)
+		if err := r.ParseMultipartForm(maxPhotoBytes); err != nil {
+			send(w, nil, bad("请上传不超过 2 MB 的图片文件"))
+			return
+		}
+		if r.MultipartForm != nil {
+			defer r.MultipartForm.RemoveAll()
+		}
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			send(w, nil, bad("请选择需要上传的图片文件"))
+			return
+		}
+		defer file.Close()
+		data, err := io.ReadAll(io.LimitReader(file, maxPhotoBytes+1))
+		if err != nil {
+			send(w, nil, bad("读取图片文件失败"))
+			return
+		}
+		photo, err := s.uploadPhoto(r.Context(), authToken(r), r.FormValue("hotel"), r.FormValue("caption"), data)
+		send(w, photo, err)
+	})
+	mux.HandleFunc("GET /api/photos/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ct, data, err := s.readPhoto(r.Context(), r.PathValue("id"))
+		if err != nil {
+			send(w, nil, err)
+			return
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Disposition", "inline")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	})
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { send(w, nil, missing()) })
 	if static != "" {
 		mux.Handle("/", http.FileServer(http.Dir(static)))

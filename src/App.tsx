@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   Avatar,
   Badge,
@@ -21,11 +21,16 @@ import {
   Tab,
   TabList,
   Text,
+  Toast,
+  Toaster,
+  ToastTitle,
+  ToastTrigger,
+  useToastController,
 } from "@fluentui/react-components";
 import {
   Building24Regular,
   ChevronDown16Regular,
-  Dismiss20Regular,
+  Dismiss16Regular,
   Person24Regular,
 } from "@fluentui/react-icons";
 import { AppContext } from "./context";
@@ -49,7 +54,7 @@ import {
   dateTime,
 } from "./model";
 import type { Role, Scenario } from "./model";
-import { ConfirmDialog, Empty, Notice } from "./components/shared";
+import { ConfirmDialog, Empty } from "./components/shared";
 import {
   Explore,
   HotelPage,
@@ -119,10 +124,9 @@ export function App() {
   );
   const [toolsOpen, setToolsOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
-  const [notification, setNotification] = useState<{
-    text: string;
-    intent: "success" | "error" | "warning" | "info";
-  } | null>(null);
+  const [scrolled, setScrolled] = useState(false);
+  const toasterId = useId();
+  const { dispatchToast } = useToastController(toasterId);
   const mainRef = useRef<HTMLElement>(null);
   const routeRole: Role = path.startsWith("/staff")
     ? "staff"
@@ -142,11 +146,16 @@ export function App() {
   useEffect(() => {
     const onHash = () => {
       setPath(window.location.hash.slice(1) || "/explore");
-      setNotification(null);
       window.scrollTo(0, 0);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 8);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
   useEffect(() => {
     if (!prototype) return;
@@ -174,8 +183,32 @@ export function App() {
     (
       text: string,
       intent: "success" | "error" | "warning" | "info" = "success",
-    ) => setNotification({ text, intent }),
-    [],
+    ) => {
+      dispatchToast(
+        <Toast>
+          <ToastTitle
+            action={
+              <ToastTrigger>
+                <Button
+                  appearance="transparent"
+                  size="small"
+                  icon={<Dismiss16Regular />}
+                  aria-label="关闭提示"
+                />
+              </ToastTrigger>
+            }
+          >
+            {text}
+          </ToastTitle>
+        </Toast>,
+        {
+          intent,
+          timeout: intent === "error" ? 6000 : 3800,
+          pauseOnHover: true,
+        },
+      );
+    },
+    [dispatchToast],
   );
   const refresh = useCallback(async () => {
     if (prototype) {
@@ -393,7 +426,7 @@ export function App() {
         >
           跳到主要内容
         </a>
-        <header className="app-header">
+        <header className={`app-header ${scrolled ? "scrolled" : ""}`}>
           <div className="header-inner">
             <div className="brand-group">
               <Button
@@ -530,19 +563,9 @@ export function App() {
           ref={mainRef}
           className="main-content"
         >
-          {notification && (
-            <div className="global-notice">
-              <Notice intent={notification.intent}>{notification.text}</Notice>
-              <Button
-                appearance="subtle"
-                icon={<Dismiss20Regular />}
-                aria-label="关闭提示"
-                onClick={() => setNotification(null)}
-              />
-            </div>
-          )}
           {page}
         </main>
+        <Toaster toasterId={toasterId} position="top-end" />
         <footer className="app-footer">
           <span>
             {prototype

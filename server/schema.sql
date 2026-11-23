@@ -165,3 +165,25 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE INDEX IF NOT EXISTS audit_hotel ON audit (hotel_id, id DESC);
 CREATE INDEX IF NOT EXISTS audit_created_order ON audit (object)
     WHERE action = '提交预订' AND result = '成功';
+
+CREATE TABLE IF NOT EXISTS hotel_photos (
+    id text PRIMARY KEY,
+    hotel_id text NOT NULL REFERENCES hotels ON DELETE CASCADE,
+    sort_order integer NOT NULL DEFAULT 0,
+    caption text NOT NULL DEFAULT '',
+    content_type text NOT NULL DEFAULT '',
+    data bytea NOT NULL DEFAULT ''::bytea,
+    source_url text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hotel_photos_hotel_idx
+    ON hotel_photos (hotel_id, sort_order, created_at, id);
+
+INSERT INTO hotel_photos(id, hotel_id, sort_order, caption, content_type, data, source_url)
+SELECT 'seed-' || h.id || '-cover', h.id, 0,
+       CASE WHEN h.caption <> '' THEN h.caption ELSE h.name END,
+       '', ''::bytea, h.image
+FROM hotels h
+WHERE h.image <> ''
+  AND NOT EXISTS (SELECT 1 FROM hotel_photos p WHERE p.hotel_id = h.id)
+ON CONFLICT DO NOTHING;

@@ -19,7 +19,7 @@ func authorizedCommand(a account, c command) bool {
 	switch c.Action {
 	case "book", "revise", "cancel":
 		return a.Role == customer
-	case "transition", "calendar", "room":
+	case "transition", "calendar", "room", "photo_add_preset", "photo_reorder", "photo_caption", "photo_delete":
 		return a.Role == staff
 	case "hotel":
 		return c.Hotel == "" && a.Role == admin || c.Hotel != "" && a.Role == staff
@@ -204,6 +204,14 @@ func dispatch(ctx context.Context, tx pgx.Tx, a account, now time.Time, c comman
 		return saveHotel(ctx, tx, a, now, c)
 	case "room":
 		return saveRoom(ctx, tx, a, now, c)
+	case "photo_add_preset":
+		return addPresetPhoto(ctx, tx, a, now, c)
+	case "photo_reorder":
+		return reorderPhotos(ctx, tx, a, now, c)
+	case "photo_caption":
+		return updatePhotoCaption(ctx, tx, a, now, c)
+	case "photo_delete":
+		return deletePhoto(ctx, tx, a, now, c)
 	case "hotel_enabled":
 		if err := sqlExec(ctx, tx, "UPDATE hotels SET enabled=$2 WHERE id=$1", c.Hotel, c.Enabled); err != nil {
 			return result{}, err

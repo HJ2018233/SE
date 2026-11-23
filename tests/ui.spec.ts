@@ -527,6 +527,166 @@ test("选房页整卡可点，改订页隐藏目的地城市输入", async ({ pa
   await expect(page.getByLabel("目的地城市")).toHaveCount(0);
 });
 
+test("酒店订单处理在 600–1200px 临界宽度无筛选框重叠与状态徽章溢出", async ({
+  page,
+}) => {
+  for (const width of [600, 601, 640, 700, 768, 820, 821, 900, 1000, 1200]) {
+    await page.setViewportSize({ width, height: 900 });
+    await open(page, "/staff/orders");
+    const check = await page.evaluate(() => {
+      const docOverflow =
+        document.documentElement.scrollWidth >
+        document.documentElement.clientWidth + 1;
+      const filterItems = [...document.querySelectorAll(".filter-bar > *")]
+        .map((el) => el.getBoundingClientRect())
+        .filter((r) => r.width > 0 && r.height > 0);
+      const overlaps: string[] = [];
+      for (let i = 0; i < filterItems.length; i++) {
+        for (let j = i + 1; j < filterItems.length; j++) {
+          const a = filterItems[i];
+          const b = filterItems[j];
+          const vOverlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+          const hOverlap = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+          if (vOverlap > 4 && hOverlap > 2) {
+            overlaps.push(`${i}-${j}:${Math.round(hOverlap)}px`);
+          }
+        }
+      }
+      const badBadges = [...document.querySelectorAll(".fui-Badge")]
+        .filter((el) => {
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) return false;
+          return (
+            el.scrollHeight > el.clientHeight + 1 ||
+            el.scrollWidth > el.clientWidth + 1 ||
+            getComputedStyle(el).whiteSpace !== "nowrap"
+          );
+        })
+        .map((el) => el.textContent?.trim() || "");
+      return { docOverflow, overlaps, badBadges };
+    });
+    expect(check.docOverflow, `width ${width} docOverflow`).toBe(false);
+    expect(check.overlaps, `width ${width} filter overlaps`).toEqual([]);
+    expect(check.badBadges, `width ${width} wrapped/overflowed badges`).toEqual([]);
+  }
+});
+
+test("酒店资料编辑区域与标语、未保存提示、顾客页预览及相册闭环", async ({
+  page,
+}) => {
+  await open(page, "/staff/hotel");
+  await page.getByLabel("所在区域（选填）").fill("夫子庙秦淮带");
+  await page.getByLabel("一句话介绍（选填）").fill("枕水而居的安静庭院。");
+  await expect(page.getByText("有未保存修改", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "预览顾客页面", exact: true }).click();
+  const preview = page.getByRole("dialog", { name: "顾客页面预览" });
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText("夫子庙秦淮带");
+  await expect(preview).toContainText("枕水而居的安静庭院。");
+  await expect(preview).toContainText("尚未保存的酒店资料修改");
+  await preview.getByRole("button", { name: "关闭顾客页面预览" }).click();
+
+  await page.getByRole("button", { name: "保存酒店资料", exact: true }).click();
+  await expect(page.getByText("有未保存修改", { exact: true })).toHaveCount(0);
+
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
+    "base64",
+  );
+  await page.getByLabel("选择酒店图片文件").setInputFiles({
+    name: "courtyard-custom.png",
+    mimeType: "image/png",
+    buffer: tinyPng,
+  });
+  await expect(page.getByText("已添加 3 / 12 张", { exact: false })).toBeVisible();
+
+  await page.getByRole("button", { name: "从示例图库选取", exact: true }).click();
+  const presetDialog = page.getByRole("dialog", { name: "从内置示例图库选取" });
+  await presetDialog.getByRole("button", { name: "加入相册" }).nth(1).click();
+  await expect(page.getByText("已添加 4 / 12 张", { exact: false })).toBeVisible();
+
+  await page.getByRole("button", { name: "设为封面" }).first().click();
+  await page.getByRole("button", { name: "将第 3 张照片后移" }).click();
+  await page.getByRole("button", { name: "删除第 4 张照片" }).click();
+  await expect(page.getByText("已添加 3 / 12 张", { exact: false })).toBeVisible();
+
+  await open(page, "/hotel/qt");
+  await expect(page.getByText("夫子庙秦淮带", { exact: false })).toBeVisible();
+  const tiles = page.locator(".detail-gallery .gallery-tile");
+  await expect(tiles).toHaveCount(3);
+  await tiles.first().click();
+  const lightbox = page.getByRole("dialog");
+  await expect(lightbox).toContainText("1 / 3");
+  await lightbox.getByRole("button", { name: "下一张照片" }).click();
+  await expect(lightbox).toContainText("2 / 3");
+  await page.keyboard.press("Escape");
+  await expect(lightbox).toHaveCount(0);
+});
+
+test("管理员新建酒店不借用其他酒店图片且无空分隔符", async ({ page }) => {
+  await open(page, "/admin/hotels");
+  await page.getByRole("button", { name: "创建酒店", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "创建酒店" });
+  await dialog.getByLabel("酒店名称", { exact: false }).fill("钟山 · 云舍");
+  await dialog.getByLabel("城市", { exact: false }).fill("南京");
+  await dialog.getByLabel("联系电话", { exact: false }).fill("025-88888888");
+  await dialog.getByLabel("地址", { exact: false }).fill("南京市玄武区陵园路 1 号");
+  await dialog.getByRole("button", { name: "创建酒店", exact: true }).click();
+
+  const card = page.locator(".hotel-admin-card", { hasText: "钟山 · 云舍" });
+  await expect(card).toBeVisible();
+  await expect(card.locator(".hotel-image-placeholder")).toBeVisible();
+  await expect(card.locator("img")).toHaveCount(0);
+  const text = await card.innerText();
+  expect(text).not.toContain("·  ·");
+
+  const newId = await page.evaluate(
+    () =>
+      JSON.parse(localStorage.getItem("hotel-ui-demo-v1")!).hotels.find(
+        (h) => h.name === "钟山 · 云舍",
+      ).id,
+  );
+  await open(page, `/hotel/${newId}`);
+  await expect(page.locator(".detail-gallery.is-empty")).toBeVisible();
+  await expect(page.getByText("暂无实景照片", { exact: true }).first()).toBeVisible();
+});
+
+test("不可订房型显示不可订原因而非 ¥0、城市建议可选、手机端我的订单抽屉筛选", async ({
+  page,
+}) => {
+  await open(page, "/hotel/qt");
+  await page.getByRole("button", { name: "修改日期与人数" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByRole("group", { name: "可订城市建议" })
+    .getByRole("button", { name: "南京", exact: true })
+    .click();
+  await dialog.getByLabel("入住人数", { exact: false }).fill("3");
+  await dialog.getByRole("button", { name: "查找酒店", exact: true }).click();
+
+  const firstRoom = page.locator(".room-option").first();
+  await expect(firstRoom).toContainText("当前不可订");
+  await expect(firstRoom).toContainText("人数超限（最多可住 2 人）");
+  await expect(firstRoom.locator(".room-price")).not.toContainText("¥0");
+  await expect(page.getByRole("button", { name: "填写预订" }).first()).toBeDisabled();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await open(page, "/orders");
+  await expect(page.locator(".orders-filter-bar")).toBeHidden();
+  await expect(page.locator(".mobile-orders-bar")).toBeVisible();
+  await page
+    .locator(".mobile-orders-bar")
+    .getByRole("button", { name: /筛选/ })
+    .click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toBeVisible();
+  await drawer.getByLabel("订单状态").selectOption("已确认");
+  await drawer.getByRole("button", { name: /查看订单/ }).click();
+  await expect(drawer).toHaveCount(0);
+  await expect(page.locator(".order-card").first()).toContainText("已确认");
+});
+
 for (const route of [
   "/explore",
   "/hotel/qt",

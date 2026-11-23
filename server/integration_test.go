@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -338,6 +340,151 @@ func TestPostgresBookingLifecycle(t *testing.T) {
 	expectAPI[result](t, do(adminToken, command{Action: "staff_enabled", ID: staffID, Enabled: false}), 200)
 	expectAPI[problem](t, callAPI(handler, "GET", "/api/state", front, nil), 401)
 
+	if err := s.verifyStore(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func uploadMultipartPhoto(handler http.Handler, token, hotelID, caption, filename string, data []byte) *httptest.ResponseRecorder {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("hotel", hotelID)
+	_ = writer.WriteField("caption", caption)
+	part, _ := writer.CreateFormFile("file", filename)
+	_, _ = part.Write(data)
+	_ = writer.Close()
+
+	r := httptest.NewRequest(http.MethodPost, "/api/photos", &body)
+	r.Header.Set("Content-Type", writer.FormDataContentType())
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	return w
+}
+
+func TestHotelPhotosAndProfileLifecycle(t *testing.T) {
+	s, _ := postgresTestService(t)
+	ctx := context.Background()
+	handler := s.routes(t.TempDir(), nil)
+	login := func(path, username, password string) string {
+		t.Helper()
+		return expectAPI[signInResult](t, callAPI(handler, "POST", path, "", credentials{
+			Username: username, Password: password,
+		}), 200).Token
+	}
+	adminToken := login("/api/login", "admin", "isolated-test-admin")
+	cust := login("/api/register", "photo-guest", "isolated-test-user")
+	do := func(token string, c command) *httptest.ResponseRecorder {
+		return callAPI(handler, "POST", "/api/commands", token, c)
+	}
+	expectAPI[result](t, do(adminToken, command{Action: "staff_create",
+		User: credentials{Username: "photo-qt", Password: "isolated-test-staff", Hotel: "qt"}}), 200)
+	expectAPI[result](t, do(adminToken, command{Action: "staff_create",
+		User: credentials{Username: "photo-xw", Password: "isolated-test-staff", Hotel: "xw"}}), 200)
+	front := login("/api/login", "photo-qt", "isolated-test-staff")
+	foreign := login("/api/login", "photo-xw", "isolated-test-staff")
+
+	created := expectAPI[result](t, do(adminToken, command{
+		Action: "hotel",
+		Property: hotel{
+			Name: "新设驿馆", City: "苏州", District: "姑苏区",
+			Address: "平江路 1 号", Phone: "0512-00001111", Caption: "小桥流水旁",
+		},
+	}), 200)
+	view := expectAPI[snapshot](t, callAPI(handler, "GET", "/api/state", adminToken, nil), 200)
+	var newHotel *hotel
+	for i := range view.Hotels {
+		if view.Hotels[i].ID == created.ID {
+			newHotel = &view.Hotels[i]
+			break
+		}
+	}
+	if newHotel == nil || newHotel.Image != "" || len(newHotel.Photos) != 0 || newHotel.District != "姑苏区" || newHotel.Caption != "小桥流水旁" {
+		t.Fatalf("unexpected newly created hotel state: %+v", newHotel)
+	}
+
+	expectAPI[result](t, do(front, command{
+		Action: "hotel",
+		Hotel:  "qt",
+		Property: hotel{
+			Name: "秦淮 · 栖庭", City: "南京", District: "老门东",
+			Address: "南京市秦淮区庭院路 18 号", Phone: "025-00000001", Caption: "白墙青瓦与晨光。", Description: "更新简介",
+		},
+	}), 200)
+
+	pngBytes, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectAPI[problem](t, uploadMultipartPhoto(handler, front, "qt", "非法", "evil.html", []byte("<html>not-image</html>")), 400)
+	expectAPI[problem](t, uploadMultipartPhoto(handler, foreign, "qt", "越权", "a.png", pngBytes), 403)
+	expectAPI[problem](t, uploadMultipartPhoto(handler, cust, "qt", "越权", "a.png", pngBytes), 403)
+
+	uploaded := expectAPI[hotelPhoto](t, uploadMultipartPhoto(handler, front, "qt", "定制实景", "custom.png", pngBytes), 200)
+	if uploaded.URL != "/api/photos/"+uploaded.ID {
+		t.Fatalf("unexpected uploaded photo url: %+v", uploaded)
+	}
+	fetched := callAPI(handler, http.MethodGet, uploaded.URL, "", nil)
+	if fetched.Code != 200 || fetched.Header().Get("Content-Type") != "image/png" ||
+		fetched.Header().Get("X-Content-Type-Options") != "nosniff" ||
+		fetched.Header().Get("Cross-Origin-Resource-Policy") != "cross-origin" ||
+		!strings.Contains(fetched.Header().Get("Cache-Control"), "immutable") ||
+		!bytes.Equal(fetched.Body.Bytes(), pngBytes) {
+		t.Fatalf("unexpected GET photo response: code=%d headers=%v len=%d", fetched.Code, fetched.Header(), fetched.Body.Len())
+	}
+
+	expectAPI[problem](t, do(front, command{Action: "photo_add_preset", Hotel: "qt", PhotoURL: "/images/unknown.png"}), 400)
+	presetRes := expectAPI[result](t, do(front, command{Action: "photo_add_preset", Hotel: "qt", PhotoURL: "/images/lake-room.png", Note: "窗畔茶席"}), 200)
+	if presetRes.Photo == nil || presetRes.Photo.URL != "/images/lake-room.png" {
+		t.Fatalf("unexpected preset result: %+v", presetRes)
+	}
+
+	view = expectAPI[snapshot](t, callAPI(handler, "GET", "/api/state", "", nil), 200)
+	var qtHotel hotel
+	for _, h := range view.Hotels {
+		if h.ID == "qt" {
+			qtHotel = h
+			break
+		}
+	}
+	if qtHotel.District != "老门东" || qtHotel.Caption != "白墙青瓦与晨光。" || len(qtHotel.Photos) != 4 {
+		t.Fatalf("unexpected qt hotel after uploads: %+v", qtHotel)
+	}
+
+	order := []string{uploaded.ID}
+	for _, p := range qtHotel.Photos {
+		if p.ID != uploaded.ID {
+			order = append(order, p.ID)
+		}
+	}
+	expectAPI[result](t, do(front, command{Action: "photo_reorder", Hotel: "qt", PhotoOrder: order}), 200)
+	expectAPI[result](t, do(front, command{Action: "photo_caption", Hotel: "qt", ID: uploaded.ID, Note: "新封面说明"}), 200)
+
+	view = expectAPI[snapshot](t, callAPI(handler, "GET", "/api/state", "", nil), 200)
+	for _, h := range view.Hotels {
+		if h.ID == "qt" {
+			qtHotel = h
+			break
+		}
+	}
+	if qtHotel.Image != uploaded.URL || qtHotel.Photos[0].ID != uploaded.ID || qtHotel.Photos[0].Caption != "新封面说明" {
+		t.Fatalf("reorder or caption did not sync cover: %+v", qtHotel)
+	}
+
+	for _, p := range qtHotel.Photos {
+		expectAPI[result](t, do(front, command{Action: "photo_delete", Hotel: "qt", ID: p.ID}), 200)
+	}
+	if err := s.migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	view = expectAPI[snapshot](t, callAPI(handler, "GET", "/api/state", "", nil), 200)
+	for _, h := range view.Hotels {
+		if h.ID == "qt" && (h.Image != "" || len(h.Photos) != 0) {
+			t.Fatalf("deleted photos resurrected or cover remained: %+v", h)
+		}
+	}
 	if err := s.verifyStore(ctx); err != nil {
 		t.Fatal(err)
 	}

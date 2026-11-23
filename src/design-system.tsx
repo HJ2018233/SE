@@ -28,7 +28,11 @@ export const hotelLightTheme: Theme = {
   fontFamilyBase:
     "'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Roboto, 'Helvetica Neue', sans-serif",
   borderRadiusMedium: "6px",
-  borderRadiusLarge: "10px",
+  borderRadiusLarge: "12px",
+  borderRadiusXLarge: "16px",
+  shadow4: "0 2px 6px rgba(10, 26, 34, 0.06), 0 0 1px rgba(10, 26, 34, 0.08)",
+  shadow8:
+    "0 8px 24px rgba(10, 26, 34, 0.09), 0 1px 3px rgba(10, 26, 34, 0.06)",
 };
 
 /** Shared Fluent 2 context for all roles and viewport sizes. */

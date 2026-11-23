@@ -4,8 +4,13 @@ import {
   Badge,
   Button,
   Checkbox,
+  DrawerBody,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerHeaderTitle,
   Field,
   Input,
+  OverlayDrawer,
   Radio,
   RadioGroup,
   Select,
@@ -16,6 +21,8 @@ import {
 import {
   ArrowRight24Regular,
   CalendarLtr24Regular,
+  Checkmark16Regular,
+  Dismiss20Regular,
   Filter20Regular,
   Location20Regular,
 } from "@fluentui/react-icons";
@@ -31,6 +38,7 @@ import type { Quote } from "../api";
 import {
   activeStatuses,
   addDays,
+  hotelPhotos,
   hotelRooms,
   hotelRoom,
   available,
@@ -42,13 +50,15 @@ import {
   nightState,
   normalizeDigits,
   quote,
+  roomBookable,
   roomMatches,
+  roomUnavailableReason,
   shortDate,
   statuses,
   total,
   validConditions,
 } from "../model";
-import type { Conditions, Hotel, Night, Order, OrderStatus } from "../model";
+import type { Conditions, Hotel, Night, Order } from "../model";
 import {
   Back,
   ConditionsDialog,
@@ -64,6 +74,8 @@ import {
   Status,
 } from "../components/shared";
 import { FluentDatePicker } from "../components/DateField";
+import { HotelImage } from "../components/HotelImage";
+import { HotelGallery } from "../components/HotelGallery";
 
 export function Explore() {
   const { data, conditions, setConditions, go, connected } = useApp();
@@ -125,12 +137,16 @@ export function Explore() {
     );
   const featured = hotels[0],
     count = days(conditions.start, conditions.end).length;
-  const hasFilters =
-    conditions.type !== "all" || conditions.min !== "" || conditions.max !== "";
+  const activeFilterCount =
+    (conditions.type !== "all" ? 1 : 0) +
+    (conditions.min !== "" ? 1 : 0) +
+    (conditions.max !== "" ? 1 : 0);
+  const hasFilters = activeFilterCount > 0;
   const activeFilterRoom =
     conditions.type !== "all"
       ? data.rooms.find((r) => r.id === conditions.type)?.name
       : "";
+  const featuredPhotos = hotelPhotos(featured);
   return (
     <>
       <div className="search-context">
@@ -141,10 +157,13 @@ export function Explore() {
           onClick={() => setEdit(true)}
         >
           <span className="search-context-main">
-            <Location20Regular />
-            <Text weight="semibold">{conditions.city}</Text>
-            <span className="muted">
-              / {shortDate(conditions.start)} — {shortDate(conditions.end)} ·{" "}
+            <span className="search-pill-city">
+              <Location20Regular />
+              <Text weight="semibold">{conditions.city}</Text>
+            </span>
+            <span className="search-pill-sep" aria-hidden="true" />
+            <span className="search-pill-meta muted">
+              {shortDate(conditions.start)} — {shortDate(conditions.end)} ·{" "}
               {conditions.people} 人 · {conditions.rooms} 间
             </span>
           </span>
@@ -175,10 +194,20 @@ export function Explore() {
           )}
           <Button
             icon={<Filter20Regular />}
-            appearance="subtle"
+            appearance={hasFilters ? "outline" : "subtle"}
             onClick={() => setFilter(true)}
           >
             筛选
+            {activeFilterCount > 0 && (
+              <Badge
+                appearance="filled"
+                color="brand"
+                size="small"
+                className="filter-count-badge"
+              >
+                {activeFilterCount}
+              </Badge>
+            )}
           </Button>
         </div>
       </div>
@@ -221,22 +250,42 @@ export function Explore() {
             </div>
             <div className="feature">
               <div className="feature-image">
-                <img
-                  src={featured.image}
-                  alt={`${featured.name}，${featured.description}`}
+                <HotelImage
+                  src={featuredPhotos[0]?.url || featured.image}
+                  alt={
+                    featured.description
+                      ? `${featured.name}，${featured.description}`
+                      : featured.name
+                  }
+                  hotelName={featured.name}
+                  district={featured.district}
                   fetchPriority="high"
                 />
+                <span className="feature-photo-index" aria-hidden="true">
+                  01 / {String(hotels.length).padStart(2, "0")}
+                </span>
+                {featuredPhotos.length > 1 && (
+                  <span className="photo-count-pill">
+                    {featuredPhotos.length} 张实景
+                  </span>
+                )}
               </div>
               <div className="hotel-ticket">
                 <div className="ticket-info">
                   <span className="feature-tag">
-                    01 / {String(hotels.length).padStart(2, "0")} ·{" "}
-                    {featured.district}
+                    {[
+                      `01 / ${String(hotels.length).padStart(2, "0")}`,
+                      featured.district,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </span>
                   <Text as="h2" size={700} weight="semibold">
                     {featured.name}
                   </Text>
-                  <p className="muted">{featured.caption}</p>
+                  {featured.caption && (
+                    <p className="muted">{featured.caption}</p>
+                  )}
                   <div className="ticket-price">
                     <Price
                       value={
@@ -300,51 +349,71 @@ export function Explore() {
                 </div>
               </div>
               <div className="hotel-grid">
-                {hotels.slice(1).map((h, index) => (
-                  <article
-                    className="hotel-card"
-                    key={h.id}
-                    onClick={() => go(`/hotel/${h.id}`)}
-                  >
-                    <img src={h.image} alt={h.description} loading="lazy" />
-                    <div>
-                      <Text className="feature-tag" size={200}>
-                        {String(index + 2).padStart(2, "0")} · {h.district}
-                      </Text>
-                      <Text as="h3" size={500} weight="semibold">
-                        {h.name}
-                      </Text>
-                      <Text className="muted" size={200}>
-                        {h.caption}
-                      </Text>
-                      <p className="muted">
-                        {offer(h).name} · 每间可住 {offer(h).capacity} 人
-                      </p>
-                      <Price
-                        value={total(
-                          quote(data, h.id, offer(h).id, conditions),
-                          conditions.rooms,
+                {hotels.slice(1).map((h, index) => {
+                  const hPhotos = hotelPhotos(h);
+                  return (
+                    <article
+                      className="hotel-card"
+                      key={h.id}
+                      onClick={() => go(`/hotel/${h.id}`)}
+                    >
+                      <div className="hotel-card-media">
+                        <HotelImage
+                          src={hPhotos[0]?.url || h.image}
+                          alt={h.description || h.name}
+                          hotelName={h.name}
+                          district={h.district}
+                          loading="lazy"
+                        />
+                        {hPhotos.length > 1 && (
+                          <span className="photo-count-pill">
+                            {hPhotos.length} 张实景
+                          </span>
                         )}
-                      />
-                      <Text className="muted" size={200}>
-                        {count} 晚 {conditions.rooms} 间合计起
-                      </Text>
-                      <div>
-                        <Button
-                          appearance="subtle"
-                          icon={<ArrowRight24Regular />}
-                          iconPosition="after"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            go(`/hotel/${h.id}`);
-                          }}
-                        >
-                          查看房型
-                        </Button>
                       </div>
-                    </div>
-                  </article>
-                ))}
+                      <div className="hotel-card-body">
+                        <Text className="feature-tag" size={200}>
+                          {[String(index + 2).padStart(2, "0"), h.district]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </Text>
+                        <Text as="h3" size={500} weight="semibold">
+                          {h.name}
+                        </Text>
+                        {h.caption && (
+                          <Text className="muted" size={200}>
+                            {h.caption}
+                          </Text>
+                        )}
+                        <p className="muted">
+                          {offer(h).name} · 每间可住 {offer(h).capacity} 人
+                        </p>
+                        <Price
+                          value={total(
+                            quote(data, h.id, offer(h).id, conditions),
+                            conditions.rooms,
+                          )}
+                        />
+                        <Text className="muted" size={200}>
+                          {count} 晚 {conditions.rooms} 间合计起
+                        </Text>
+                        <div>
+                          <Button
+                            appearance="subtle"
+                            icon={<ArrowRight24Regular />}
+                            iconPosition="after"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              go(`/hotel/${h.id}`);
+                            }}
+                          >
+                            查看房型
+                          </Button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             </section>
           )}
@@ -405,57 +474,90 @@ export function Explore() {
 }
 
 export function HotelPage({ id }: { id: string }) {
-  const { data, conditions, setConditions, go } = useApp();
+  const { data, conditions, setConditions, go, role } = useApp();
   const hotel = data.hotels.find((h) => h.id === id);
   const allRooms = hotelRooms(data, id);
   const matching = allRooms.filter((room) =>
     roomMatches(data, id, room, conditions),
   );
+  const bookable = allRooms.filter((room) =>
+    roomBookable(data, id, room, conditions),
+  );
+  const firstPreferredId = matching[0]?.id || bookable[0]?.id || "";
   const [selected, setSelected] = useState(
-      () => matching[0]?.id || allRooms[0]?.id || "",
+      () => firstPreferredId || allRooms[0]?.id || "",
     ),
     [edit, setEdit] = useState(false);
-  const firstMatchingId = matching[0]?.id || "";
   const firstRoomId = allRooms[0]?.id || "";
   const hasSelected = allRooms.some((r) => r.id === selected);
   useEffect(() => {
     if (!firstRoomId) return;
-    if (!hasSelected) setSelected(firstMatchingId || firstRoomId);
-  }, [hasSelected, firstMatchingId, firstRoomId]);
+    if (!hasSelected) setSelected(firstPreferredId || firstRoomId);
+  }, [hasSelected, firstPreferredId, firstRoomId]);
   useEffect(() => {
-    if (firstMatchingId && !matching.some((r) => r.id === selected)) {
-      setSelected(firstMatchingId);
+    const currentRoom = hotelRoom(data, id, selected) || allRooms[0];
+    if (
+      firstPreferredId &&
+      currentRoom &&
+      !roomBookable(data, id, currentRoom, conditions)
+    ) {
+      setSelected(firstPreferredId);
     }
-  }, [conditions, firstMatchingId]);
+  }, [conditions, firstPreferredId]);
   if (!hotel) return <Empty title="未找到酒店" />;
   const room = hotelRoom(data, id, selected) || allRooms[0];
+  const eyebrowText = [hotel.city, hotel.district].filter(Boolean).join(" / ");
   if (!room)
     return (
       <>
-        <Back to="/explore" label="返回酒店浏览" />
-        <Heading eyebrow={`${hotel.city} / ${hotel.district}`} title={hotel.name}>
+        <Back
+          to={role === "staff" ? "/staff/hotel" : "/explore"}
+          label={role === "staff" ? "返回酒店资料" : "返回酒店浏览"}
+        />
+        <Heading eyebrow={eyebrowText} title={hotel.name}>
           {hotel.address}
         </Heading>
         <Empty
           title="该酒店暂未配置可订房型"
-          action={<Button onClick={() => go("/explore")}>返回酒店浏览</Button>}
+          action={
+            <Button
+              onClick={() =>
+                go(role === "staff" ? "/staff/hotel" : "/explore")
+              }
+            >
+              {role === "staff" ? "返回酒店资料" : "返回酒店浏览"}
+            </Button>
+          }
         >
           请选择其他酒店或稍后再试。
         </Empty>
       </>
     );
-  const canBook = matching.some((r) => r.id === room.id);
+  const selectedReason = roomUnavailableReason(data, id, room, conditions);
+  const canBook = !selectedReason;
   const nights = quote(data, id, room.id, conditions);
+  const hasNights = nights.length > 0 && nights.every((n) => n.price > 0);
   const remaining = Math.min(
     ...days(conditions.start, conditions.end).map((date) =>
       available(data, id, room.id, date),
     ),
   );
+  const photos = hotelPhotos(hotel);
   return (
     <>
-      <Back to="/explore" label="返回酒店浏览" />
+      <Back
+        to={role === "staff" ? "/staff/hotel" : "/explore"}
+        label={role === "staff" ? "返回酒店资料" : "返回酒店浏览"}
+      />
+      {role === "staff" && (
+        <div className="space-bottom">
+          <Notice intent="info">
+            当前以工作人员视角预览顾客端选房页面；修改后的酒店资料与相册已实时同步到此视图。
+          </Notice>
+        </div>
+      )}
       <Heading
-        eyebrow={`${hotel.city} / ${hotel.district}`}
+        eyebrow={eyebrowText}
         title={hotel.name}
         action={
           <Button onClick={() => setEdit(true)} icon={<CalendarLtr24Regular />}>
@@ -465,14 +567,14 @@ export function HotelPage({ id }: { id: string }) {
       >
         {hotel.address}
       </Heading>
-      <div className="detail-gallery">
-        <img src={hotel.image} alt={hotel.description} />
-        <img
-          src="/images/garden-entrance.png"
-          alt="灰砖与木门围合的酒店庭院，演示环境图"
-        />
-      </div>
-      <p className="detail-description">{hotel.description}</p>
+      <HotelGallery
+        photos={photos}
+        hotelName={hotel.name}
+        district={hotel.district}
+      />
+      {hotel.description && (
+        <p className="detail-description">{hotel.description}</p>
+      )}
       <div className="two-columns hotel-selection">
         <section>
           <div className="section-label">
@@ -490,11 +592,14 @@ export function HotelPage({ id }: { id: string }) {
             aria-label="选择房型"
           >
             {allRooms.map((r) => {
-              const matches = matching.some((m) => m.id === r.id);
+              const reason = roomUnavailableReason(data, id, r, conditions);
+              const isBookable = !reason;
               const price = quote(data, id, r.id, conditions);
+              const hasPrices =
+                price.length > 0 && price.every((n) => n.price > 0);
               return (
                 <div
-                  className={`room-option ${room.id === r.id ? "selected" : ""}`}
+                  className={`room-option ${room.id === r.id ? "selected" : ""} ${!isBookable ? "unavailable" : ""}`}
                   key={r.id}
                   onClick={() => setSelected(r.id)}
                 >
@@ -503,20 +608,37 @@ export function HotelPage({ id }: { id: string }) {
                     <Text weight="semibold" size={400}>
                       {r.name}
                     </Text>
-                    <p className="muted">
-                      {r.size} m² · {r.bed}
-                    </p>
-                    <p className="muted">
-                      {r.description} · 每间可住 {r.capacity} 人
-                    </p>
+                    <div className="room-specs">
+                      <span className="room-spec-chip">{r.size} m²</span>
+                      <span className="room-spec-chip">{r.bed}</span>
+                      <span className="room-spec-chip">
+                        每间可住 {r.capacity} 人
+                      </span>
+                    </div>
+                    {r.description && <p className="muted">{r.description}</p>}
                   </div>
                   <div className="room-price">
-                    <Price value={price[0]?.price || 0} />
-                    <Text className="muted" size={200}>
-                      {matches
-                        ? `${price.length} 晚合计 ${money(total(price, conditions.rooms))}`
-                        : "当前条件下不可订"}
-                    </Text>
+                    {isBookable && hasPrices ? (
+                      <>
+                        <Price value={price[0].price} />
+                        <Text className="muted" size={200}>
+                          {price.length} 晚合计{" "}
+                          {money(total(price, conditions.rooms))}
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Badge appearance="tint" color="subtle">
+                          当前不可订
+                        </Badge>
+                        <Text
+                          className="muted room-unavailable-reason"
+                          size={200}
+                        >
+                          {reason || "当前条件下不可订"}
+                        </Text>
+                      </>
+                    )}
                   </div>
                 </div>
               );
@@ -552,7 +674,9 @@ export function HotelPage({ id }: { id: string }) {
           </Text>
           <StaySummary conditions={conditions} onEdit={() => setEdit(true)} />
           <Text weight="semibold">{room.name}</Text>
-          <NightQuote nights={nights} rooms={conditions.rooms} />
+          {hasNights && (
+            <NightQuote nights={nights} rooms={conditions.rooms} />
+          )}
           {canBook ? (
             <p className="muted space-top">
               当前住宿区间每晚至少剩余 {remaining} 间。
@@ -560,7 +684,7 @@ export function HotelPage({ id }: { id: string }) {
           ) : (
             <div className="space-top">
               <Notice intent="warning">
-                该房型无法满足当前日期、容量或房量条件，请选择其他房型或修改条件。
+                当前不可订：{selectedReason}。请选择其他房型或修改日期与人数。
               </Notice>
             </div>
           )}
@@ -568,13 +692,13 @@ export function HotelPage({ id }: { id: string }) {
             className="primary-action"
             appearance="primary"
             size="large"
-            disabled={!canBook}
+            disabled={!canBook || role !== "customer"}
             onClick={() => {
               sessionStorage.setItem(`hotel-room-${id}`, room.id);
               go(`/book/${id}`);
             }}
           >
-            填写预订
+            {role !== "customer" ? "预览中（仅顾客可预订）" : "填写预订"}
           </Button>
           <p className="muted space-top">提交时再次核对价格与房量。</p>
         </aside>
@@ -588,20 +712,31 @@ export function HotelPage({ id }: { id: string }) {
       />
       <div className="mobile-booking-bar">
         <div>
-          <Price value={total(nights, conditions.rooms)} />
-          <Text className="muted" size={200}>
-            {nights.length} 晚 · {conditions.rooms} 间合计
-          </Text>
+          {canBook && hasNights ? (
+            <>
+              <Price value={total(nights, conditions.rooms)} />
+              <Text className="muted" size={200}>
+                {nights.length} 晚 · {conditions.rooms} 间合计
+              </Text>
+            </>
+          ) : (
+            <>
+              <Text weight="semibold">当前不可订</Text>
+              <Text className="muted" size={200}>
+                {selectedReason || "请调整房型或条件"}
+              </Text>
+            </>
+          )}
         </div>
         <Button
           appearance="primary"
-          disabled={!canBook}
+          disabled={!canBook || role !== "customer"}
           onClick={() => {
             sessionStorage.setItem(`hotel-room-${id}`, room.id);
             go(`/book/${id}`);
           }}
         >
-          填写预订
+          {role !== "customer" ? "预览中" : "填写预订"}
         </Button>
       </div>
     </>
@@ -858,27 +993,44 @@ export function Booking({ id }: { id: string }) {
       .filter((n, idx) => nights[idx]?.price !== n.price)
       .map((n) => n.date),
   );
+  const bookingCover = hotelPhotos(hotel)[0]?.url || hotel.image;
   return (
     <>
       <Back to={`/hotel/${id}`} label="返回房型选择" />
-      <div className="booking-steps">
-        <span>01 选择房型</span>
-        <span>→</span>
-        <strong>02 核对并提交</strong>
-        <span>→</span>
-        <span>03 酒店确认</span>
-      </div>
+      <ol className="booking-steps" aria-label="预订步骤">
+        <li className="step done">
+          <span className="step-dot" aria-hidden="true">
+            <Checkmark16Regular />
+          </span>
+          <span>01 选择房型</span>
+        </li>
+        <li className="step-line done" aria-hidden="true" />
+        <li className="step active" aria-current="step">
+          <span className="step-dot" aria-hidden="true">
+            2
+          </span>
+          <strong>02 核对并提交</strong>
+        </li>
+        <li className="step-line" aria-hidden="true" />
+        <li className="step">
+          <span className="step-dot" aria-hidden="true">
+            3
+          </span>
+          <span>03 酒店确认</span>
+        </li>
+      </ol>
       <Heading title="确认预订信息" eyebrow={`${hotel.name} · ${room.name}`}>
         核对住宿信息与逐晚报价，提交后由酒店在 15 分钟内确认。
       </Heading>
       <div className="two-columns">
         <form
+          className="stack"
           onSubmit={(event) => {
             event.preventDefault();
             void submit();
           }}
         >
-          <section className="form-section">
+          <section className="form-section surface-card">
             <Text as="h2" size={500} weight="semibold">
               入住信息
             </Text>
@@ -888,7 +1040,7 @@ export function Booking({ id }: { id: string }) {
               {room.bed} · 每间可住 {room.capacity} 人 · {conditions.rooms} 间
             </p>
           </section>
-          <section className="form-section">
+          <section className="form-section surface-card">
             <Text as="h2" size={500} weight="semibold">
               入住联系人
             </Text>
@@ -928,7 +1080,7 @@ export function Booking({ id }: { id: string }) {
               联系信息用于本订单的确认和履约。手机号仅作格式校验。
             </p>
           </section>
-          <section className="form-section">
+          <section className="form-section surface-card">
             <Text as="h2" size={500} weight="semibold">
               核对报价并提交
             </Text>
@@ -995,16 +1147,18 @@ export function Booking({ id }: { id: string }) {
           </section>
         </form>
         <aside className="aside-panel">
-          <img
-            src={hotel.image}
+          <HotelImage
+            src={bookingCover}
             className="booking-photo"
             alt={`${hotel.name}房间示意`}
+            hotelName={hotel.name}
+            district={hotel.district}
           />
           <Text as="h2" size={600} weight="semibold">
             {hotel.name}
           </Text>
           <p className="muted space-top">
-            {hotel.district} · {room.name}
+            {[hotel.district, room.name].filter(Boolean).join(" · ")}
           </p>
           <StaySummary conditions={conditions} />
           <NightQuote nights={nights} rooms={conditions.rooms} compact />
@@ -1060,6 +1214,7 @@ export function Orders() {
     [state, setState] = useState("all"),
     [start, setStart] = useState(""),
     [end, setEnd] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
   const [offset, setOffset] = useState(0);
   const [serverOrders, setServerOrders] = useState<Order[]>([]);
   const [listError, setListError] = useState("");
@@ -1106,8 +1261,62 @@ export function Orders() {
             (!end || o.start < end),
         )
         .sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
-  const hasFilters =
-    hotel !== "all" || state !== "all" || start !== "" || end !== "";
+  const activeFilterCount =
+    (hotel !== "all" ? 1 : 0) +
+    (state !== "all" ? 1 : 0) +
+    (start !== "" ? 1 : 0) +
+    (end !== "" ? 1 : 0);
+  const hasFilters = activeFilterCount > 0;
+  const resetFilters = () => {
+    setHotel("all");
+    setState("all");
+    setStart("");
+    setEnd("");
+  };
+  const filterFields = (
+    <>
+      <Field label="酒店">
+        <Select value={hotel} onChange={(_, d) => setHotel(d.value)}>
+          <option value="all">全部酒店</option>
+          {data.hotels.map((h) => (
+            <option key={h.id} value={h.id}>
+              {h.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="订单状态">
+        <Select value={state} onChange={(_, d) => setState(d.value)}>
+          <option value="all">全部状态</option>
+          {statuses.map((s) => (
+            <option key={s}>{s}</option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="入住日起">
+        <FluentDatePicker
+          clearable
+          value={start}
+          rangeStart={isValidIsoDate(start) ? start : undefined}
+          rangeEnd={isValidIsoDate(end) ? end : undefined}
+          onChange={(next) => {
+            setStart(next);
+            if (next && end && end <= next) setEnd(addDays(next, 1));
+          }}
+        />
+      </Field>
+      <Field label="入住日止（不含）">
+        <FluentDatePicker
+          clearable
+          value={end}
+          minDate={isValidIsoDate(start) ? addDays(start, 1) : undefined}
+          rangeStart={isValidIsoDate(start) ? start : undefined}
+          rangeEnd={isValidIsoDate(end) ? end : undefined}
+          onChange={setEnd}
+        />
+      </Field>
+    </>
+  );
   return (
     <>
       <Heading
@@ -1117,61 +1326,95 @@ export function Orders() {
       >
         查看酒店确认、住宿安排与订单处理进度。
       </Heading>
-      <div className="filter-bar">
-        <Field label="酒店">
-          <Select value={hotel} onChange={(_, d) => setHotel(d.value)}>
-            <option value="all">全部酒店</option>
-            {data.hotels.map((h) => (
-              <option key={h.id} value={h.id}>
-                {h.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="订单状态">
-          <Select value={state} onChange={(_, d) => setState(d.value)}>
-            <option value="all">全部状态</option>
-            {statuses.map((s) => (
-              <option key={s}>{s}</option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="入住日起">
-          <FluentDatePicker
-            clearable
-            value={start}
-            rangeStart={isValidIsoDate(start) ? start : undefined}
-            rangeEnd={isValidIsoDate(end) ? end : undefined}
-            onChange={(next) => {
-              setStart(next);
-              if (next && end && end <= next) setEnd(addDays(next, 1));
-            }}
-          />
-        </Field>
-        <Field label="入住日止（不含）">
-          <FluentDatePicker
-            clearable
-            value={end}
-            minDate={isValidIsoDate(start) ? addDays(start, 1) : undefined}
-            rangeStart={isValidIsoDate(start) ? start : undefined}
-            rangeEnd={isValidIsoDate(end) ? end : undefined}
-            onChange={setEnd}
-          />
-        </Field>
-        {hasFilters && (
+      <div className="quick-filter-bar" role="group" aria-label="快捷状态筛选">
+        {(
+          [
+            ["all", "全部订单"],
+            ["待确认", "待确认"],
+            ["已确认", "已确认"],
+            ["已入住", "已入住"],
+            ["已退房", "已退房"],
+            ["已取消", "已取消"],
+          ] as const
+        ).map(([val, label]) => (
           <Button
-            appearance="subtle"
-            onClick={() => {
-              setHotel("all");
-              setState("all");
-              setStart("");
-              setEnd("");
-            }}
+            key={val}
+            size="small"
+            appearance={state === val ? "primary" : "subtle"}
+            onClick={() => setState(val)}
           >
+            {label}
+          </Button>
+        ))}
+      </div>
+      <div className="mobile-orders-bar">
+        <Text size={200} className="muted">
+          {hasFilters ? `已筛选 ${activeFilterCount} 项条件` : `共 ${orders.length} 笔订单`}
+        </Text>
+        <div className="inline">
+          {hasFilters && (
+            <Button size="small" appearance="subtle" onClick={resetFilters}>
+              重置
+            </Button>
+          )}
+          <Button
+            size="small"
+            appearance={hasFilters ? "outline" : "secondary"}
+            icon={<Filter20Regular />}
+            onClick={() => setFilterOpen(true)}
+          >
+            筛选
+            {activeFilterCount > 0 && (
+              <Badge
+                appearance="filled"
+                color="brand"
+                size="small"
+                className="filter-count-badge"
+              >
+                {activeFilterCount}
+              </Badge>
+            )}
+          </Button>
+        </div>
+      </div>
+      <div className="filter-bar orders-filter-bar">
+        {filterFields}
+        {hasFilters && (
+          <Button appearance="subtle" onClick={resetFilters}>
             重置筛选
           </Button>
         )}
       </div>
+      <OverlayDrawer
+        open={filterOpen}
+        position="bottom"
+        className="mobile-filter-drawer"
+        onOpenChange={(_, d) => setFilterOpen(d.open)}
+      >
+        <DrawerHeader>
+          <DrawerHeaderTitle
+            action={
+              <Button
+                appearance="subtle"
+                icon={<Dismiss20Regular />}
+                aria-label="关闭订单筛选"
+                onClick={() => setFilterOpen(false)}
+              />
+            }
+          >
+            筛选我的订单
+          </DrawerHeaderTitle>
+        </DrawerHeader>
+        <DrawerBody className="stack">{filterFields}</DrawerBody>
+        <DrawerFooter className="mobile-filter-drawer-actions">
+          {hasFilters && (
+            <Button onClick={resetFilters}>重置筛选</Button>
+          )}
+          <Button appearance="primary" onClick={() => setFilterOpen(false)}>
+            查看订单 ({orders.length})
+          </Button>
+        </DrawerFooter>
+      </OverlayDrawer>
       {orders.length ? (
         <div className="order-list">
           {orders.map((order) => {
@@ -1179,7 +1422,12 @@ export function Orders() {
               r = hotelRoom(data, order.hotel, order.room);
             return (
               <article className="order-card" key={order.id}>
-                <img src={h.image} alt={`${h.name}房间示意`} />
+                <HotelImage
+                  src={hotelPhotos(h)[0]?.url || h.image}
+                  alt={`${h.name}房间示意`}
+                  hotelName={h.name}
+                  district={h.district}
+                />
                 <div className="order-main">
                   <div className="order-title">
                     <Text size={500} weight="semibold">
@@ -1366,11 +1614,12 @@ export function OrderDetail({ id }: { id: string }) {
       )}
       <div className="two-columns space-top">
         <section>
-          <img
-            className="booking-photo"
-            style={{ height: 240 }}
-            src={hotel.image}
-            alt={hotel.description}
+          <HotelImage
+            className="booking-photo order-detail-photo"
+            src={hotelPhotos(hotel)[0]?.url || hotel.image}
+            alt={hotel.description || hotel.name}
+            hotelName={hotel.name}
+            district={hotel.district}
           />
           <div className="facts">
             <div className="fact">
@@ -1946,12 +2195,13 @@ export function AuthPage({
       <Back to="/explore" label="继续浏览酒店" />
       <div className="auth-layout">
         <div className="auth-image">
-          <img
+          <HotelImage
             src="/images/courtyard-room.png"
             alt="光线穿过庭院树叶，落在酒店房间的床边"
+            hotelName="酒店预订系统"
           />
           <div className="auth-copy">
-            <Text size={600} weight="semibold">
+            <Text size={600} weight="semibold" className="auth-copy-title">
               实时房态与逐晚透明报价，
               <br />
               轻松安排每一次入住。

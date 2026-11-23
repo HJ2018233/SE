@@ -3,6 +3,12 @@ import {
   Badge,
   Button,
   Checkbox,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
   DrawerBody,
   DrawerFooter,
   DrawerHeader,
@@ -25,11 +31,13 @@ import {
   Dismiss20Regular,
   Edit20Regular,
   Eye20Regular,
+  Open20Regular,
 } from "@fluentui/react-icons";
 import { useApp } from "../context";
 import { api, errorMessage, operationKey } from "../api";
 import {
   activeStatuses,
+  hotelPhotos,
   hotelRooms,
   hotelRoom,
   addDays,
@@ -73,6 +81,9 @@ import {
 } from "../components/shared";
 import { FluentDatePicker } from "../components/DateField";
 import { NumericInput } from "../components/NumericInput";
+import { HotelImage } from "../components/HotelImage";
+import { HotelGallery } from "../components/HotelGallery";
+import { PhotoManager } from "../components/PhotoManager";
 
 export function CalendarPage() {
   const { data, update, audit, notify, staffHotel, connected, command } =
@@ -233,7 +244,9 @@ export function CalendarPage() {
       incBlocked = incidentBlocked(data, staffHotel, room.id, date),
       unscheduled = connected && entry.version === 0,
       soldOut =
-        sellable === 0 && !incBlocked && !entry.stopped && !unscheduled;
+        sellable === 0 && !incBlocked && !entry.stopped && !unscheduled,
+      lowStock =
+        sellable > 0 && sellable <= 2 && !incBlocked && !entry.stopped && !unscheduled;
     const statusLabel = incBlocked
       ? "异常停售"
       : unscheduled
@@ -247,7 +260,16 @@ export function CalendarPage() {
       <Button
         key={`${room.id}-${date}`}
         appearance="subtle"
-        className={`day-cell ${sellable === 0 ? "stopped" : ""} ${soldOut ? "sold-out" : ""}`}
+        className={[
+          "day-cell",
+          sellable === 0 ? "stopped" : "",
+          incBlocked ? "is-incident" : "",
+          unscheduled ? "is-unscheduled" : "",
+          soldOut ? "sold-out" : "",
+          lowStock ? "is-low" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
         aria-label={`${room.name} ${shortDate(date)}，${money(entry.price)}，可订 ${sellable} 间，编辑`}
         onClick={() => open(room.id, date)}
       >
@@ -1204,31 +1226,37 @@ export function StaffOrders() {
       {queryError && <Notice intent="error">{queryError}</Notice>}
       {orders.length ? (
         <div className="table-wrap staff-order-table">
-          <table>
-            <thead>
-              <tr>
-                <th>订单 / 房型</th>
-                <th>住宿安排</th>
-                <th>订单状态</th>
-                <th>报价总额</th>
-                <th>联系手机</th>
-                <th>处理</th>
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader">订单 / 房型</th>
+                <th role="columnheader">住宿安排</th>
+                <th role="columnheader">订单状态</th>
+                <th role="columnheader">报价总额</th>
+                <th role="columnheader">联系手机</th>
+                <th role="columnheader">处理</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {orders.map((o) => (
-                <tr key={o.id}>
-                  <td data-label="订单 / 房型">
-                    <div className="staff-order-id">{o.id}</div>
-                    <Text size={200} className="muted">
-                      {
-                        hotelRooms(data, staffHotel).find(
-                          (r) => r.id === o.room,
-                        )?.name
-                      }
-                    </Text>
+                <tr
+                  key={o.id}
+                  role="row"
+                  className={o.status === "待确认" ? "row-pending" : undefined}
+                >
+                  <td role="cell" data-label="订单 / 房型">
+                    <div>
+                      <div className="staff-order-id">{o.id}</div>
+                      <Text size={200} className="muted">
+                        {
+                          hotelRooms(data, staffHotel).find(
+                            (r) => r.id === o.room,
+                          )?.name
+                        }
+                      </Text>
+                    </div>
                   </td>
-                  <td data-label="住宿安排">
+                  <td role="cell" data-label="住宿安排">
                     <div>
                       {shortDate(o.start)} — {shortDate(o.end)}
                       <br />
@@ -1237,8 +1265,8 @@ export function StaffOrders() {
                       </span>
                     </div>
                   </td>
-                  <td data-label="订单状态">
-                    <div>
+                  <td role="cell" data-label="订单状态" className="col-status">
+                    <div className="cell-status-stack">
                       <Status status={o.status} />
                       {o.status === "待确认" && (
                         <div className="subtle">
@@ -1250,10 +1278,10 @@ export function StaffOrders() {
                       {o.incident && <div className="subtle">异常处置中</div>}
                     </div>
                   </td>
-                  <td data-label="报价总额">
+                  <td role="cell" data-label="报价总额" className="col-amount">
                     {money(total(o.nights, o.rooms))}
                   </td>
-                  <td data-label="联系手机">
+                  <td role="cell" data-label="联系手机" className="col-phone">
                     {`尾号 ${o.phoneTail || o.phone?.slice(-4) || "—"}`}
                     {(connected
                       ? Boolean(
@@ -1261,7 +1289,7 @@ export function StaffOrders() {
                         )
                       : !o.phone) && " · 已到期"}
                   </td>
-                  <td data-label="处理">
+                  <td role="cell" data-label="处理" className="col-action">
                     <Button onClick={() => setSelected(o.id)}>
                       查看与处理
                     </Button>
@@ -1302,7 +1330,7 @@ export function StaffOrders() {
 }
 
 export function HotelSettings() {
-  const { data, update, audit, notify, staffHotel, connected, command } =
+  const { data, update, audit, notify, staffHotel, connected, command, go } =
     useApp();
   const hotel = data.hotels.find((h) => h.id === staffHotel);
   const [draft, setDraft] = useState<Hotel>(() =>
@@ -1318,9 +1346,12 @@ export function HotelSettings() {
         offset: 0,
         enabled: true,
         phone: "",
+        photos: [],
       },
     ),
     [error, setError] = useState(""),
+    [previewOpen, setPreviewOpen] = useState(false),
+    [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false),
     [editRoom, setEditRoom] = useState<Room | null>(null),
     [isNewRoom, setIsNewRoom] = useState(false),
     [roomCapacity, setRoomCapacity] = useState("2"),
@@ -1332,10 +1363,31 @@ export function HotelSettings() {
     hotel?.id,
     hotel?.name,
     hotel?.city,
+    hotel?.district,
     hotel?.address,
     hotel?.phone,
+    hotel?.caption,
     hotel?.description,
   ]);
+  const isDirty = Boolean(
+    hotel &&
+      (draft.name !== hotel.name ||
+        draft.city !== hotel.city ||
+        draft.district !== hotel.district ||
+        draft.address !== hotel.address ||
+        draft.phone !== hotel.phone ||
+        draft.caption !== hotel.caption ||
+        draft.description !== hotel.description),
+  );
+  useEffect(() => {
+    if (!isDirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
   if (!hotel) return <Empty title="未找到所属酒店资料" />;
   const openRoomModal = (room: Room, creating: boolean) => {
     setRoomError("");
@@ -1354,12 +1406,21 @@ export function HotelSettings() {
       return;
     }
     if (connected) {
-      const { name, city, address, phone, description } = draft;
+      const { name, city, district, address, phone, caption, description } =
+        draft;
       try {
         await command({
           action: "hotel",
           hotel: staffHotel,
-          property: { name, city, address, phone, description },
+          property: {
+            name,
+            city,
+            district,
+            address,
+            phone,
+            caption,
+            description,
+          },
         });
         setError("");
         notify("酒店资料已保存。");
@@ -1376,67 +1437,119 @@ export function HotelSettings() {
               ...h,
               name: draft.name.trim(),
               city: draft.city.trim(),
+              district: draft.district.trim(),
               address: draft.address.trim(),
               phone: draft.phone.trim(),
+              caption: draft.caption.trim(),
               description: draft.description.trim(),
             }
           : h,
       ),
     }));
     setError("");
-    audit("维护酒店资料", staffHotel, "更新名称、城市、地址、联系电话或简介");
+    audit(
+      "维护酒店资料",
+      staffHotel,
+      "更新名称、城市、区域、地址、联系电话或简介",
+    );
     notify("酒店资料已保存。");
   };
+  const photos = hotelPhotos(hotel);
+  const roomsList = hotelRooms(data, staffHotel);
+  const previewPrice = roomsList[0]?.price || 46800;
   return (
     <>
       <Heading
         eyebrow={`${hotel.name} · 酒店工作台`}
         title="酒店与房型资料"
         action={
-          <Button
-            appearance="primary"
-            icon={<Add20Regular />}
-            onClick={() => {
-              openRoomModal(
-                {
-                  id: connected ? "" : `RM${Date.now()}`,
-                  hotel: staffHotel,
-                  name: "",
-                  price: 46800,
-                  capacity: 2,
-                  size: 32,
-                  bed: "1 张 1.8m 大床",
-                  description: "",
-                  enabled: true,
-                },
-                true,
-              );
-            }}
-          >
-            新增房型
-          </Button>
+          <div className="button-row">
+            <Button
+              icon={<Eye20Regular />}
+              onClick={() => setPreviewOpen(true)}
+            >
+              预览顾客页面
+            </Button>
+            <Button
+              appearance="primary"
+              icon={<Add20Regular />}
+              onClick={() => {
+                openRoomModal(
+                  {
+                    id: connected ? "" : `RM${Date.now()}`,
+                    hotel: staffHotel,
+                    name: "",
+                    price: 46800,
+                    capacity: 2,
+                    size: 32,
+                    bed: "1 张 1.8m 大床",
+                    description: "",
+                    enabled: true,
+                  },
+                  true,
+                );
+              }}
+            >
+              新增房型
+            </Button>
+          </div>
         }
       >
-        维护所属酒店的基本信息与房型说明；预订按房型进行，不分配具体房号。
+        维护所属酒店的基本信息、展示相册与房型说明；预订按房型进行，不分配具体房号。
       </Heading>
       <div className="settings-grid">
         <section className="settings-section">
-          <Text as="h2" size={500} weight="semibold">
-            酒店资料
-          </Text>
+          <div className="section-label">
+            <Text as="h2" size={500} weight="semibold">
+              酒店资料
+            </Text>
+            {isDirty && (
+              <Badge appearance="tint" color="warning">
+                有未保存修改
+              </Badge>
+            )}
+          </div>
           <div className="form-grid">
-            {(["name", "city", "address", "phone"] as const).map((key, i) => (
-              <Field
-                label={["酒店名称", "所在城市", "详细地址", "联系电话"][i]}
-                key={key}
-                className={key === "address" ? "span-2" : ""}
-              >
-                <Input
-                  value={draft[key]}
-                  onChange={(_, d) => setDraft({ ...draft, [key]: d.value })}
-                />
-              </Field>
-            ))}
+            <Field label="酒店名称" required>
+              <Input
+                value={draft.name}
+                onChange={(_, d) => setDraft({ ...draft, name: d.value })}
+              />
+            </Field>
+            <Field label="所在城市" required>
+              <Input
+                value={draft.city}
+                onChange={(_, d) => setDraft({ ...draft, city: d.value })}
+              />
+            </Field>
+            <Field label="所在区域（选填）">
+              <Input
+                value={draft.district}
+                placeholder="例如：秦淮区"
+                maxLength={40}
+                onChange={(_, d) => setDraft({ ...draft, district: d.value })}
+              />
+            </Field>
+            <Field label="联系电话" required>
+              <Input
+                value={draft.phone}
+                onChange={(_, d) => setDraft({ ...draft, phone: d.value })}
+              />
+            </Field>
+            <Field label="详细地址" required className="span-2">
+              <Input
+                value={draft.address}
+                onChange={(_, d) => setDraft({ ...draft, address: d.value })}
+              />
+            </Field>
+            <Field label="一句话介绍（选填）" className="span-2">
+              <Input
+                value={draft.caption}
+                placeholder="展示在探索列表与酒店标题卡片，例如：把庭院，留在窗边。"
+                maxLength={80}
+                onChange={(_, d) => setDraft({ ...draft, caption: d.value })}
+              />
+            </Field>
             <Field label="酒店简介" className="span-2">
               <Textarea
                 value={draft.description}
@@ -1452,15 +1565,27 @@ export function HotelSettings() {
               <Notice intent="error">{error}</Notice>
             </div>
           )}
-          <Button appearance="primary" className="space-top" onClick={save}>
-            保存酒店资料
-          </Button>
+          <div className="button-row space-top">
+            <Button appearance="primary" onClick={save}>
+              保存酒店资料
+            </Button>
+            {isDirty && (
+              <Button
+                onClick={() => {
+                  setDraft(hotel);
+                  setError("");
+                }}
+              >
+                放弃修改
+              </Button>
+            )}
+          </div>
         </section>
         <section className="settings-section">
           <Text as="h2" size={500} weight="semibold">
             房型资料
           </Text>
-          {hotelRooms(data, staffHotel).map((r) => (
+          {roomsList.map((r) => (
             <article className="room-edit-row" key={r.id}>
               <div>
                 <div className="inline">
@@ -1486,7 +1611,124 @@ export function HotelSettings() {
             有订单引用的房型保留历史，可停用；逐日价格与房量在日历中维护。
           </p>
         </section>
+        <PhotoManager hotel={hotel} />
       </div>
+      <Dialog
+        open={previewOpen}
+        onOpenChange={(_, d) => setPreviewOpen(d.open)}
+      >
+        <DialogSurface className="wide-dialog preview-dialog">
+          <DialogBody>
+            <DialogTitle
+              action={
+                <Button
+                  appearance="subtle"
+                  icon={<Dismiss20Regular />}
+                  aria-label="关闭顾客页面预览"
+                  onClick={() => setPreviewOpen(false)}
+                />
+              }
+            >
+              顾客页面预览
+            </DialogTitle>
+            <DialogContent className="stack">
+              {isDirty && (
+                <Notice intent="warning">
+                  当前预览包含了尚未保存的酒店资料修改，返回后请记得点击“保存酒店资料”。
+                </Notice>
+              )}
+              <div>
+                <Text size={200} weight="semibold" className="eyebrow">
+                  探索页酒店卡片效果
+                </Text>
+                <article className="hotel-card preview-card">
+                  <div className="hotel-card-media">
+                    <HotelImage
+                      src={photos[0]?.url || hotel.image}
+                      alt={draft.description || draft.name || hotel.name}
+                      hotelName={draft.name || hotel.name}
+                      district={draft.district}
+                    />
+                    {photos.length > 1 && (
+                      <span className="photo-count-pill">
+                        {photos.length} 张实景
+                      </span>
+                    )}
+                  </div>
+                  <div className="hotel-card-body">
+                    <Text className="feature-tag" size={200}>
+                      {["01", draft.district].filter(Boolean).join(" · ")}
+                    </Text>
+                    <Text
+                      as="h3"
+                      size={500}
+                      weight="semibold"
+                      className="preview-serif-title"
+                    >
+                      {draft.name || hotel.name}
+                    </Text>
+                    {draft.caption && (
+                      <Text className="muted" size={200}>
+                        {draft.caption}
+                      </Text>
+                    )}
+                    <p className="muted">
+                      {roomsList[0]?.name || "代表房型"} ·{" "}
+                      {[draft.city, draft.district].filter(Boolean).join(" ")}
+                    </p>
+                    <Price value={previewPrice} />
+                  </div>
+                </article>
+              </div>
+              <div>
+                <Text size={200} weight="semibold" className="eyebrow">
+                  详情页画廊与简介效果
+                </Text>
+                <HotelGallery
+                  photos={photos}
+                  hotelName={draft.name || hotel.name}
+                  district={draft.district}
+                />
+                {draft.description && (
+                  <p className="muted">{draft.description}</p>
+                )}
+              </div>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setPreviewOpen(false)}>关闭预览</Button>
+              <Button
+                appearance="primary"
+                icon={<Open20Regular />}
+                onClick={() => {
+                  if (isDirty) {
+                    setLeaveConfirmOpen(true);
+                  } else {
+                    setPreviewOpen(false);
+                    go(`/hotel/${staffHotel}`);
+                  }
+                }}
+              >
+                打开完整顾客选房页
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+      <ConfirmDialog
+        open={leaveConfirmOpen}
+        title="放弃未保存的资料修改？"
+        confirm="放弃并跳转预览"
+        onClose={() => setLeaveConfirmOpen(false)}
+        onConfirm={() => {
+          setLeaveConfirmOpen(false);
+          setPreviewOpen(false);
+          go(`/hotel/${staffHotel}`);
+        }}
+      >
+        <p>
+          当前“酒店资料”表单仍有未保存的编辑。直接打开完整顾客选房页将显示已保存版本；建议先保存后再查看。
+        </p>
+      </ConfirmDialog>
       <ConfirmDialog
         open={Boolean(editRoom)}
         title={isNewRoom ? "新增房型" : "编辑房型资料"}
@@ -1870,26 +2112,26 @@ export function StatsPage() {
         {snapshot.rows.length ? (
           <>
             <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>订单编号</th>
-                    <th>住宿日</th>
-                    <th>房型 / 间数</th>
-                    <th>订单状态</th>
-                    <th>逐晚状态</th>
-                    <th className="numeric">单间价</th>
-                    <th className="numeric">有效金额</th>
+              <table role="table">
+                <thead role="rowgroup">
+                  <tr role="row">
+                    <th role="columnheader">订单编号</th>
+                    <th role="columnheader">住宿日</th>
+                    <th role="columnheader">房型 / 间数</th>
+                    <th role="columnheader">订单状态</th>
+                    <th role="columnheader">逐晚状态</th>
+                    <th role="columnheader" className="numeric">单间价</th>
+                    <th role="columnheader" className="numeric">有效金额</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody role="rowgroup">
                   {snapshot.rows
                     .slice(page * 8, page * 8 + 8)
                     .map((row, index) => (
-                      <tr key={`${row.order}-${row.date}-${index}`}>
-                        <td data-label="订单编号">{row.order}</td>
-                        <td data-label="住宿日">{shortDate(row.date)}</td>
-                        <td data-label="房型 / 间数">
+                      <tr role="row" key={`${row.order}-${row.date}-${index}`}>
+                        <td role="cell" data-label="订单编号">{row.order}</td>
+                        <td role="cell" data-label="住宿日">{shortDate(row.date)}</td>
+                        <td role="cell" data-label="房型 / 间数">
                           {
                             hotelRooms(data, staffHotel).find(
                               (r) => r.id === row.room,
@@ -1897,12 +2139,20 @@ export function StatsPage() {
                           }{" "}
                           / {row.rooms}
                         </td>
-                        <td data-label="订单状态">{row.status}</td>
-                        <td data-label="逐晚状态">{row.state}</td>
-                        <td data-label="单间价" className="numeric">
+                        <td role="cell" data-label="订单状态">
+                          {statuses.includes(row.status as OrderStatus) ? (
+                            <Status status={row.status as OrderStatus} />
+                          ) : (
+                            row.status
+                          )}
+                        </td>
+                        <td role="cell" data-label="逐晚状态">
+                          <NightStateBadge state={row.state} />
+                        </td>
+                        <td role="cell" data-label="单间价" className="numeric">
                           {money(row.price)}
                         </td>
-                        <td data-label="有效金额" className="numeric">
+                        <td role="cell" data-label="有效金额" className="numeric">
                           {money(row.effective)}
                         </td>
                       </tr>
@@ -2581,12 +2831,27 @@ export function AdminHotels() {
     [draft, setDraft] = useState({
       name: "",
       city: "",
+      district: "",
       address: "",
       phone: "",
+      caption: "",
     }),
     [error, setError] = useState("");
+  const resetDraft = () =>
+    setDraft({
+      name: "",
+      city: "",
+      district: "",
+      address: "",
+      phone: "",
+      caption: "",
+    });
   const save = async () => {
-    if (!Object.values(draft).every((v) => v.trim())) {
+    if (
+      ![draft.name, draft.city, draft.address, draft.phone].every((v) =>
+        v.trim(),
+      )
+    ) {
       setError("请填写酒店名称、城市、地址和联系电话。");
       return;
     }
@@ -2594,7 +2859,7 @@ export function AdminHotels() {
       try {
         await command({ action: "hotel", property: draft });
         setCreate(false);
-        setDraft({ name: "", city: "", address: "", phone: "" });
+        resetDraft();
         notify("酒店已创建，可为工作人员绑定所属酒店。");
       } catch (cause) {
         setError(errorMessage(cause));
@@ -2607,12 +2872,16 @@ export function AdminHotels() {
       hotels: [
         ...current.hotels,
         {
-          ...draft,
           id,
-          district: draft.city,
-          image: "/images/garden-entrance.png",
-          caption: "新的住宿，等待被发现。",
-          description: "酒店资料由所属工作人员继续维护。",
+          name: draft.name.trim(),
+          city: draft.city.trim(),
+          district: draft.district.trim(),
+          address: draft.address.trim(),
+          phone: draft.phone.trim(),
+          caption: draft.caption.trim(),
+          image: "",
+          photos: [],
+          description: "",
           offset: 0,
           enabled: true,
         },
@@ -2620,7 +2889,7 @@ export function AdminHotels() {
     }));
     audit("创建酒店", id, "创建酒店资料并启用");
     setCreate(false);
-    setDraft({ name: "", city: "", address: "", phone: "" });
+    resetDraft();
     notify("酒店已创建，可为工作人员绑定所属酒店。");
   };
   return (
@@ -2643,32 +2912,40 @@ export function AdminHotels() {
       >
         管理酒店启停。已有订单与历史资料保留，实际无法履约的情况从异常事件处理。
       </Heading>
-      {data.hotels.map((h) => (
-        <article className="hotel-admin-card" key={h.id}>
-          <img src={h.image} alt={`${h.name}演示图片`} />
-          <div>
-            <div className="order-title">
-              <Text as="h2" size={600} weight="semibold">
-                {h.name}
-              </Text>
-              <Badge appearance="tint" color={h.enabled ? "success" : "subtle"}>
-                {h.enabled ? "启用" : "停用"}
-              </Badge>
+      {data.hotels.map((h) => {
+        const cover = hotelPhotos(h)[0]?.url || h.image;
+        return (
+          <article className="hotel-admin-card" key={h.id}>
+            <HotelImage
+              src={cover}
+              alt={`${h.name}酒店封面`}
+              hotelName={h.name}
+              district={h.district || "待上传照片"}
+            />
+            <div>
+              <div className="order-title">
+                <Text as="h2" size={600} weight="semibold">
+                  {h.name}
+                </Text>
+                <Badge appearance="tint" color={h.enabled ? "success" : "subtle"}>
+                  {h.enabled ? "启用" : "停用"}
+                </Badge>
+              </div>
+              <p className="muted">
+                {[h.city, h.district, h.address].filter(Boolean).join(" · ")}
+              </p>
+              <p className="muted">
+                {h.phone} · 酒店编号 {h.id}
+              </p>
             </div>
-            <p className="muted">
-              {h.city} · {h.address}
-            </p>
-            <p className="muted">
-              {h.phone} · 酒店编号 {h.id}
-            </p>
-          </div>
-          <div className="button-row">
-            <Button onClick={() => setToggle(h)}>
-              {h.enabled ? "停用酒店" : "启用酒店"}
-            </Button>
-          </div>
-        </article>
-      ))}
+            <div className="button-row">
+              <Button onClick={() => setToggle(h)}>
+                {h.enabled ? "停用酒店" : "启用酒店"}
+              </Button>
+            </div>
+          </article>
+        );
+      })}
       <ConfirmDialog
         danger={Boolean(toggle?.enabled)}
         open={Boolean(toggle)}
@@ -2719,18 +2996,46 @@ export function AdminHotels() {
         onConfirm={save}
       >
         <div className="form-grid">
-          {(["name", "city", "address", "phone"] as const).map((key, i) => (
-            <Field
-              key={key}
-              label={["酒店名称", "城市", "地址", "联系电话"][i]}
-              className={key === "address" ? "span-2" : ""}
-            >
-              <Input
-                value={draft[key]}
-                onChange={(_, d) => setDraft({ ...draft, [key]: d.value })}
-              />
-            </Field>
-          ))}
+          <Field label="酒店名称" required>
+            <Input
+              value={draft.name}
+              onChange={(_, d) => setDraft({ ...draft, name: d.value })}
+            />
+          </Field>
+          <Field label="城市" required>
+            <Input
+              value={draft.city}
+              onChange={(_, d) => setDraft({ ...draft, city: d.value })}
+            />
+          </Field>
+          <Field label="所在区域（选填）">
+            <Input
+              value={draft.district}
+              placeholder="例如：鼓楼区"
+              maxLength={40}
+              onChange={(_, d) => setDraft({ ...draft, district: d.value })}
+            />
+          </Field>
+          <Field label="联系电话" required>
+            <Input
+              value={draft.phone}
+              onChange={(_, d) => setDraft({ ...draft, phone: d.value })}
+            />
+          </Field>
+          <Field label="地址" required className="span-2">
+            <Input
+              value={draft.address}
+              onChange={(_, d) => setDraft({ ...draft, address: d.value })}
+            />
+          </Field>
+          <Field label="一句话介绍（选填）" className="span-2">
+            <Input
+              value={draft.caption}
+              placeholder="创建后可由所属工作人员在相册与资料页继续完善"
+              maxLength={80}
+              onChange={(_, d) => setDraft({ ...draft, caption: d.value })}
+            />
+          </Field>
         </div>
         {error && (
           <div className="space-top">

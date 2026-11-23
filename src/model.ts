@@ -13,6 +13,11 @@ export type Conditions = {
   min: string;
   max: string;
 };
+export type HotelPhoto = {
+  id: string;
+  url: string;
+  caption: string;
+};
 export type Hotel = {
   id: string;
   name: string;
@@ -25,6 +30,7 @@ export type Hotel = {
   offset: number;
   enabled: boolean;
   phone: string;
+  photos?: HotelPhoto[];
 };
 export type Room = {
   hotel?: string;
@@ -255,6 +261,18 @@ const hotels: Hotel[] = [
     offset: 0,
     enabled: true,
     phone: "025-00000001",
+    photos: [
+      {
+        id: "seed-qt-cover",
+        url: "/images/courtyard-room.png",
+        caption: "庭院大床房 · 晨光木韵",
+      },
+      {
+        id: "seed-qt-entrance",
+        url: "/images/garden-entrance.png",
+        caption: "中式庭院入口 · 灰砖绿植",
+      },
+    ],
   },
   {
     id: "xw",
@@ -269,6 +287,13 @@ const hotels: Hotel[] = [
     offset: 6000,
     enabled: true,
     phone: "025-00000002",
+    photos: [
+      {
+        id: "seed-xw-cover",
+        url: "/images/lake-room.png",
+        caption: "湖景客房 · 宽窗茶席",
+      },
+    ],
   },
   {
     id: "ys",
@@ -283,6 +308,13 @@ const hotels: Hotel[] = [
     offset: -7000,
     enabled: true,
     phone: "025-00000003",
+    photos: [
+      {
+        id: "seed-ys-cover",
+        url: "/images/garden-entrance.png",
+        caption: "泊舍小院 · 灰砖与暖木",
+      },
+    ],
   },
 ];
 const rooms: Room[] = [
@@ -474,8 +506,23 @@ export function loadData(): DemoData {
       saved?.rooms?.length &&
       saved?.orders &&
       saved?.accounts
-    )
-      return expirePending(saved);
+    ) {
+      const normalizedHotels = saved.hotels.map((h) => ({
+        ...h,
+        photos: Array.isArray(h.photos)
+          ? h.photos
+          : h.image
+            ? [
+                {
+                  id: `legacy-${h.id}`,
+                  url: h.image,
+                  caption: h.caption || h.name,
+                },
+              ]
+            : [],
+      }));
+      return expirePending({ ...saved, hotels: normalizedHotels });
+    }
   } catch {
     /* Start with disposable demo fixtures when local data is unavailable. */
   }
@@ -682,6 +729,75 @@ export function validConditions(c: Conditions): string {
     return "最低每晚价不能高于最高每晚价。";
   return "";
 }
+export function hotelPhotos(hotel?: Hotel | null): HotelPhoto[] {
+  if (!hotel) return [];
+  if (Array.isArray(hotel.photos)) return hotel.photos;
+  return hotel.image
+    ? [
+        {
+          id: `cover-${hotel.id}`,
+          url: hotel.image,
+          caption: hotel.caption || hotel.name,
+        },
+      ]
+    : [];
+}
+
+export function roomUnavailableReason(
+  data: DemoData,
+  hotelId: string,
+  room: Room,
+  c: Conditions,
+  exclude?: string,
+): string {
+  const resolved = hotelRoom(data, hotelId, room.id);
+  if (!resolved) return "房型信息不存在";
+  const hotel = data.hotels.find((h) => h.id === hotelId);
+  if (hotel && !hotel.enabled) return "酒店当前未营业";
+  if (!resolved.enabled) return "房型已停用";
+  if (c.people > resolved.capacity * c.rooms) {
+    return `人数超限（最多可住 ${resolved.capacity * c.rooms} 人）`;
+  }
+  const stayDates = days(c.start, c.end);
+  if (!stayDates.length || c.start < TODAY) return "所选日期不可订";
+  if (data.connected && c.start === TODAY) {
+    const hour = Number(
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Shanghai",
+        hour: "2-digit",
+        hour12: false,
+      }).format(new Date()),
+    );
+    if (hour >= 18) return "今日 18:00 后不可预订当日入住";
+  }
+  for (const date of stayDates) {
+    if (incidentBlocked(data, hotelId, resolved.id, date)) {
+      return "所选日期异常停售";
+    }
+    const entry = calendarEntry(data, hotelId, resolved.id, date);
+    if ((data.connected && entry.version === 0) || entry.price <= 0) {
+      return "所选日期暂未排期";
+    }
+    if (entry.stopped) {
+      return "所选日期已停售";
+    }
+    if (available(data, hotelId, resolved.id, date, exclude) < c.rooms) {
+      return "所选日期房量不足";
+    }
+  }
+  return "";
+}
+
+export function roomBookable(
+  data: DemoData,
+  hotelId: string,
+  room: Room,
+  c: Conditions,
+  exclude?: string,
+): boolean {
+  return roomUnavailableReason(data, hotelId, room, c, exclude) === "";
+}
+
 export function roomMatches(
   data: DemoData,
   hotel: string,
@@ -697,6 +813,7 @@ export function roomMatches(
     days(c.start, c.end).every((date) => {
       const entry = calendarEntry(data, hotel, room.id, date);
       return (
+        entry.price > 0 &&
         available(data, hotel, room.id, date, exclude) >= c.rooms &&
         (!c.min || entry.price >= Number(c.min) * 100) &&
         (!c.max || entry.price <= Number(c.max) * 100)

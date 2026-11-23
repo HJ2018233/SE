@@ -28,10 +28,53 @@ func readCatalog(ctx context.Context, tx pgx.Tx, a account, view *snapshot, now 
 	if err != nil {
 		return err
 	}
-	view.Hotels, err = pgx.CollectRows(hotels, pgx.RowToStructByPos[hotel])
-	view.Hotels = listOrEmpty(view.Hotels)
-	if err != nil {
+	view.Hotels = make([]hotel, 0)
+	for hotels.Next() {
+		var h hotel
+		if err := hotels.Scan(&h.ID, &h.Name, &h.City, &h.Address, &h.Phone,
+			&h.District, &h.Image, &h.Caption, &h.Description, &h.Enabled); err != nil {
+			hotels.Close()
+			return err
+		}
+		h.Photos = make([]hotelPhoto, 0)
+		view.Hotels = append(view.Hotels, h)
+	}
+	if err := hotels.Err(); err != nil {
+		hotels.Close()
 		return err
+	}
+	hotels.Close()
+
+	if len(view.Hotels) > 0 {
+		hotelIDs := make([]string, len(view.Hotels))
+		hotelIdx := make(map[string]int, len(view.Hotels))
+		for i, h := range view.Hotels {
+			hotelIDs[i] = h.ID
+			hotelIdx[h.ID] = i
+		}
+		photoRows, err := tx.Query(ctx, `
+			SELECT id,hotel_id,caption,source_url FROM hotel_photos
+			WHERE hotel_id = ANY($1)
+			ORDER BY hotel_id,sort_order,created_at,id`, hotelIDs)
+		if err != nil {
+			return err
+		}
+		for photoRows.Next() {
+			var p hotelPhoto
+			var hid, sourceURL string
+			if err := photoRows.Scan(&p.ID, &hid, &p.Caption, &sourceURL); err != nil {
+				photoRows.Close()
+				return err
+			}
+			p.URL = photoURL(p.ID, sourceURL)
+			idx := hotelIdx[hid]
+			view.Hotels[idx].Photos = append(view.Hotels[idx].Photos, p)
+		}
+		if err := photoRows.Err(); err != nil {
+			photoRows.Close()
+			return err
+		}
+		photoRows.Close()
 	}
 	rooms, err := tx.Query(ctx, `
 		SELECT r.id,r.hotel_id,r.name,r.description,r.capacity,r.size,r.bed,r.enabled
@@ -460,6 +503,26 @@ func addSampleCatalog(ctx context.Context, tx pgx.Tx, now time.Time) error {
 		}
 		if tag.RowsAffected() == 0 {
 			continue
+		}
+		seedPhotos := map[string][]struct{ id, url, caption string }{
+			"qt": {
+				{"seed-qt-cover", "/images/courtyard-room.png", "庭院大床房 · 晨光木韵"},
+				{"seed-qt-entrance", "/images/garden-entrance.png", "中式庭院入口 · 灰砖绿植"},
+			},
+			"xw": {
+				{"seed-xw-cover", "/images/lake-room.png", "湖景客房 · 宽窗茶席"},
+			},
+			"ys": {
+				{"seed-ys-cover", "/images/garden-entrance.png", "泊舍小院 · 灰砖与暖木"},
+			},
+		}[h.ID]
+		for sortOrder, p := range seedPhotos {
+			if err := sqlExec(ctx, tx, `
+				INSERT INTO hotel_photos(id,hotel_id,sort_order,caption,content_type,data,source_url)
+				VALUES($1,$2,$3,$4,'',''::bytea,$5) ON CONFLICT DO NOTHING`,
+				p.id, h.ID, sortOrder, p.caption, p.url); err != nil {
+				return err
+			}
 		}
 		for _, room := range []struct {
 			suffix, name, bed string

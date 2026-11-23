@@ -156,25 +156,43 @@ func saveHotel(ctx context.Context, tx pgx.Tx, a account, now time.Time, c comma
 	h := c.Property
 	h.Name = cleanText(h.Name, 80)
 	h.City = cleanText(h.City, 40)
+	h.District = cleanText(h.District, 40)
 	h.Address = cleanText(h.Address, 160)
 	h.Phone = cleanText(h.Phone, 32)
 	if h.Name == "" || h.City == "" || h.Address == "" || h.Phone == "" {
 		return result{}, bad("酒店名称、城市、地址、电话均为必填项")
 	}
+	h.Caption = cleanText(h.Caption, 80)
 	h.Description = cleanText(h.Description, 600)
 	if c.Hotel == "" {
 		c.Hotel = randomID("H")
+		cover := ""
+		if presetPhotoURLs[h.Image] {
+			cover = h.Image
+		}
 		if err := sqlExec(ctx, tx, `
-			INSERT INTO hotels(id,name,city,address,phone,description,image)
-			VALUES($1,$2,$3,$4,$5,$6,'/images/garden-entrance.png')`,
-			c.Hotel, h.Name, h.City, h.Address, h.Phone, h.Description); err != nil {
+			INSERT INTO hotels(id,name,city,district,address,phone,caption,description,image)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			c.Hotel, h.Name, h.City, h.District, h.Address, h.Phone, h.Caption, h.Description, cover); err != nil {
 			return result{}, err
+		}
+		if cover != "" {
+			capText := h.Caption
+			if capText == "" {
+				capText = h.Name
+			}
+			if err := sqlExec(ctx, tx, `
+				INSERT INTO hotel_photos(id,hotel_id,sort_order,caption,content_type,data,source_url)
+				VALUES($1,$2,0,$3,'',''::bytea,$4)`,
+				randomID("P"), c.Hotel, capText, cover); err != nil {
+				return result{}, err
+			}
 		}
 		return result{ID: c.Hotel}, audit(ctx, tx, now, a, c.Hotel, "创建酒店", c.Hotel, "创建并启用酒店", "成功")
 	}
 	if err := sqlExec(ctx, tx, `
-		UPDATE hotels SET name=$2,city=$3,address=$4,phone=$5,description=$6 WHERE id=$1`,
-		c.Hotel, h.Name, h.City, h.Address, h.Phone, h.Description); err != nil {
+		UPDATE hotels SET name=$2,city=$3,district=$4,address=$5,phone=$6,caption=$7,description=$8 WHERE id=$1`,
+		c.Hotel, h.Name, h.City, h.District, h.Address, h.Phone, h.Caption, h.Description); err != nil {
 		return result{}, err
 	}
 	return result{ID: c.Hotel}, audit(ctx, tx, now, a, c.Hotel, "维护酒店资料", c.Hotel, "更新基本资料", "成功")
