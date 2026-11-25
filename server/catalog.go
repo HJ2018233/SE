@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -163,7 +164,14 @@ func saveHotel(ctx context.Context, tx pgx.Tx, a account, now time.Time, c comma
 		return result{}, bad("酒店名称、城市、地址、电话均为必填项")
 	}
 	h.Caption = cleanText(h.Caption, 80)
-	h.Description = cleanText(h.Description, 600)
+	if strings.TrimSpace(h.Description) != "" {
+		h.Description = cleanMultilineText(h.Description, 600)
+		if h.Description == "" {
+			return result{}, bad("酒店简介不能超过 600 字且不能包含非法控制字符")
+		}
+	} else {
+		h.Description = ""
+	}
 	if c.Hotel == "" {
 		c.Hotel = randomID("H")
 		cover := ""
@@ -201,7 +209,14 @@ func saveHotel(ctx context.Context, tx pgx.Tx, a account, now time.Time, c comma
 func saveRoom(ctx context.Context, tx pgx.Tx, a account, now time.Time, c command) (result, error) {
 	r := c.RoomType
 	r.Name = cleanText(r.Name, 80)
-	r.Description = cleanText(r.Description, 400)
+	if strings.TrimSpace(r.Description) != "" {
+		r.Description = cleanMultilineText(r.Description, 400)
+		if r.Description == "" {
+			return result{}, bad("房型描述不能超过 400 字且不能包含非法控制字符")
+		}
+	} else {
+		r.Description = ""
+	}
 	r.Bed = cleanText(r.Bed, 80)
 	if r.Name == "" || r.Capacity < 1 || r.Capacity > 100 || r.Size < 0 || r.Size > 10000 {
 		return result{}, bad("请填写房型名称、正整数入住人数和有效面积")

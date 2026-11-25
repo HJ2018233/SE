@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -89,7 +90,14 @@ func (s *service) execute(ctx context.Context, token string, c command) (res res
 		key := c.Key
 		c.Key = ""
 		c.Booking.Name = cleanText(c.Booking.Name, 40)
-		c.Note = cleanText(c.Note, 200)
+		if strings.TrimSpace(c.Note) != "" {
+			c.Note = cleanMultilineText(c.Note, 200)
+			if c.Note == "" {
+				return bad("请检查处理原因长度和内容")
+			}
+		} else {
+			c.Note = ""
+		}
 		encoded, err := json.Marshal(c)
 		if err != nil {
 			return err

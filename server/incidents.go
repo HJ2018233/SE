@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/url"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,7 +12,7 @@ import (
 func openIncident(ctx context.Context, tx pgx.Tx, a account, now time.Time, c command) (result, error) {
 	i := c.Incident
 	i.Title = cleanText(i.Title, 100)
-	i.Reason = cleanText(i.Reason, 400)
+	i.Reason = cleanMultilineText(i.Reason, 400)
 	if i.Title == "" || i.Reason == "" {
 		return result{}, bad("请填写事故标题和原因")
 	}
@@ -55,6 +56,23 @@ func openIncident(ctx context.Context, tx pgx.Tx, a account, now time.Time, c co
 }
 
 func closeIncident(ctx context.Context, tx pgx.Tx, a account, now time.Time, c command) (result, error) {
+	if c.Mode != "" && c.Mode != "resume" {
+		return result{}, bad("无法识别异常关闭方式")
+	}
+	var roomID, start, end string
+	var closed bool
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(room_id,''), starts::text, ends::text, closed
+		FROM incidents WHERE id=$1`, c.ID).Scan(&roomID, &start, &end, &closed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return result{}, missing()
+	}
+	if err != nil {
+		return result{}, err
+	}
+	if closed {
+		return result{ID: c.ID}, nil
+	}
 	var pendingItems bool
 	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM incident_orders WHERE incident_id=$1 AND progress<>'已处理')",
 		c.ID).Scan(&pendingItems); err != nil {
@@ -67,7 +85,25 @@ func closeIncident(ctx context.Context, tx pgx.Tx, a account, now time.Time, c c
 	if err != nil || tag.RowsAffected() == 0 {
 		return result{ID: c.ID}, err
 	}
-	return result{ID: c.ID}, audit(ctx, tx, now, a, c.Hotel, "完成异常处置", c.ID, "全部关联订单已处理", "成功")
+	detail := "全部关联订单已处理；停售标记保留"
+	if c.Mode == "resume" {
+		if err := sqlExec(ctx, tx, `
+			UPDATE calendar c SET stopped=false, version=version+1
+			FROM rooms r
+			WHERE c.room_id=r.id AND r.hotel_id=$1 AND ($2='' OR r.id=$2)
+			  AND c.date >= GREATEST($3::text::date, $5::text::date) AND c.date < $4::text::date
+			  AND c.stopped
+			  AND NOT EXISTS (
+				SELECT 1 FROM incidents other
+				WHERE other.hotel_id=$1 AND other.id<>$6 AND NOT other.closed
+				  AND (other.room_id IS NULL OR other.room_id=r.id)
+				  AND c.date >= other.starts AND c.date < other.ends
+			  )`, c.Hotel, roomID, start, end, dateAt(now), c.ID); err != nil {
+			return result{}, err
+		}
+		detail = "全部关联订单已处理；已解除影响范围停售标记"
+	}
+	return result{ID: c.ID}, audit(ctx, tx, now, a, c.Hotel, "完成异常处置", c.ID, detail, "成功")
 }
 
 func processIncident(ctx context.Context, tx pgx.Tx, a account, now time.Time, c command) (result, error) {
@@ -85,7 +121,7 @@ func processIncident(ctx context.Context, tx pgx.Tx, a account, now time.Time, c
 	if closed || progress == "已处理" {
 		return result{ID: c.ID}, nil
 	}
-	note := cleanText(c.Note, 400)
+	note := cleanMultilineText(c.Note, 400)
 	if note == "" || (c.Mode != "contacting" && c.Mode != "complete" && c.Mode != "reached") {
 		return result{}, bad("请填写联系或安置记录并选择处置结果")
 	}
@@ -150,15 +186,67 @@ func revealContact(ctx context.Context, tx pgx.Tx, a account, now time.Time, c c
 	if !contactAllowed(o, now) {
 		return result{}, conflict("privacy_expired", "联系方式的读取期限已到")
 	}
-	var phone string
-	if err := tx.QueryRow(ctx, "SELECT phone FROM contacts WHERE order_id=$1", o.ID).Scan(&phone); err != nil {
+	var name, phone string
+	if err := tx.QueryRow(ctx, "SELECT name,phone FROM contacts WHERE order_id=$1", o.ID).Scan(&name, &phone); err != nil {
 		return result{}, err
 	}
 	if phone == "" {
 		return result{}, conflict("privacy_expired", "联系信息已清理")
 	}
-	return result{Phone: phone}, audit(ctx, tx, now, a, o.Hotel, "查看完整联系方式", o.ID,
+	return result{Name: name, Phone: phone}, audit(ctx, tx, now, a, o.Hotel, "查看完整联系方式", o.ID,
 		"用途："+purpose+incidentReference(c.Incident.ID), "成功")
+}
+
+func (s *service) previewIncident(ctx context.Context, token string, filters url.Values) (out struct {
+	Count int `json:"count"`
+}, err error) {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		now := s.clock()
+		a, err := actor(ctx, tx, token, now)
+		if err != nil {
+			return err
+		}
+		if a.Role != staff && a.Role != admin {
+			return forbidden()
+		}
+		hotelID := filters.Get("hotel")
+		if a.Role == staff {
+			if hotelID == "" {
+				hotelID = a.Hotel
+			} else if hotelID != a.Hotel {
+				return forbidden()
+			}
+		}
+		if hotelID == "" {
+			return bad("请选择酒店")
+		}
+		start, end := filters.Get("start"), filters.Get("end")
+		if _, err := stayDates(start, end, 90); err != nil {
+			return err
+		}
+		if start < dateAt(now) {
+			return bad("异常影响范围从今天或之后开始")
+		}
+		if err := lockHotel(ctx, tx, hotelID); err != nil {
+			return err
+		}
+		if err := expirePending(ctx, tx, hotelID, now); err != nil {
+			return err
+		}
+		roomID := filters.Get("room")
+		if roomID != "" {
+			if _, err := readRoom(ctx, tx, hotelID, roomID); err != nil {
+				return err
+			}
+		}
+		return tx.QueryRow(ctx, `
+			SELECT count(*) FROM orders
+			WHERE hotel_id=$1 AND ($2='' OR room_id=$2)
+			  AND starts<$4::text::date AND ends>$3::text::date
+			  AND status IN ('待确认','已确认','已入住')`,
+			hotelID, roomID, start, end).Scan(&out.Count)
+	})
+	return out, err
 }
 
 func incidentReference(id string) string {

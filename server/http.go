@@ -113,6 +113,10 @@ func (s *service) routes(static string, corsOrigins []string) http.Handler {
 		value, err := s.stats(r.Context(), authToken(r), r.URL.Query())
 		send(w, value, err)
 	})
+	mux.HandleFunc("GET /api/incidents/preview", func(w http.ResponseWriter, r *http.Request) {
+		value, err := s.previewIncident(r.Context(), authToken(r), r.URL.Query())
+		send(w, value, err)
+	})
 	mux.HandleFunc("POST /api/commands", func(w http.ResponseWriter, r *http.Request) {
 		var in command
 		if err := decode(w, r, &in); err != nil {

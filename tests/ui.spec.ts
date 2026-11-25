@@ -465,21 +465,34 @@ test("自定义 Fluent 日历限制公历天数且支持键盘 Escape 分层关�
   await dialog.getByRole("button", { name: "打开日历选择日期" }).first().click();
   const popover = page.getByRole("group", { name: "日历日期选择" });
   await expect(popover).toBeVisible();
-  await expect(popover.getByRole("button", { name: "2026年11月30日" })).toBeVisible();
-  await expect(popover.getByRole("button", { name: "2026年11月31日" })).toHaveCount(0);
+  let titleText = await popover.locator(".date-cal-title").innerText();
+  for (let i = 0; i < 6 && !/(?:^|\s)(4|6|9|11) 月$/.test(titleText); i++) {
+    await popover.getByRole("button", { name: "下个月" }).click();
+    titleText = await popover.locator(".date-cal-title").innerText();
+  }
+  const match = titleText.match(/(\d{4}) 年 (\d{1,2}) 月/);
+  expect(match).not.toBeNull();
+  const [, year, month] = match!;
+  const ym = `${year}-${month.padStart(2, "0")}`;
+  await expect(
+    popover.getByRole("button", { name: `${year}年${month}月30日` }),
+  ).toBeVisible();
+  await expect(
+    popover.getByRole("button", { name: `${year}年${month}月31日` }),
+  ).toHaveCount(0);
 
-  await popover.getByRole("button", { name: "2026年11月30日" }).focus();
+  await popover.getByRole("button", { name: `${year}年${month}月30日` }).focus();
   await page.keyboard.press("Escape");
   await expect(popover).toHaveCount(0);
   await expect(dialog).toBeVisible();
 
   const startInput = dialog.getByLabel("入住日期");
-  await startInput.fill("2026-11-31");
+  await startInput.fill(`${ym}-31`);
   await expect(dialog.getByText("该公历日期不存在", { exact: false })).toBeVisible();
   await dialog.getByRole("button", { name: "查找酒店", exact: true }).click();
   await expect(dialog).toBeVisible();
 
-  await startInput.fill("2026-11-28");
+  await startInput.fill(`${ym}-28`);
   await dialog.getByRole("button", { name: "查找酒店", exact: true }).click();
   await expect(dialog).toHaveCount(0);
 });
@@ -719,3 +732,110 @@ for (const route of [
     ).toEqual([]);
   });
 }
+
+test("探索页房型筛选去重、我的订单编号搜索、未登录跳转注册保留 returnTo", async ({
+  page,
+}) => {
+  await open(page, "/explore");
+  await page.evaluate(() => {
+    const key = "hotel-ui-demo-v1";
+    const data = JSON.parse(localStorage.getItem(key)!) as DemoData;
+    data.rooms.push({
+      id: "xw-garden-dup",
+      hotel: "xw",
+      name: "庭院大床房",
+      price: 48800,
+      capacity: 2,
+      size: 33,
+      bed: "1 张 1.8m 大床",
+      description: "湖景院落",
+      enabled: true,
+    });
+    localStorage.setItem(key, JSON.stringify(data));
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "筛选", exact: true }).click();
+  await expect(
+    page.getByLabel("房型").locator("option", { hasText: "庭院大床房" }),
+  ).toHaveCount(1);
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+
+  await open(page, "/orders");
+  await page.getByLabel("查找订单编号").fill("HB20260002");
+  await expect(page.locator(".order-card")).toHaveCount(1);
+  await expect(page.locator(".order-card").first()).toContainText("HB20260002");
+
+  await open(page, "/account");
+  await page.getByRole("button", { name: "退出演示账户", exact: true }).click();
+  await open(page, "/hotel/qt");
+  await page.locator(".header-login").click();
+  await expect(page).toHaveURL(/#\/login\?returnTo=%2Fhotel%2Fqt$/);
+  await page.getByRole("button", { name: "注册顾客账户", exact: true }).click();
+  await expect(page).toHaveURL(/#\/register\?returnTo=%2Fhotel%2Fqt$/);
+  await expect(page.getByRole("heading", { name: "注册顾客账户" })).toBeVisible();
+  await page.getByLabel("账户名", { exact: false }).fill("demo_guest");
+  await page.getByLabel("密码", { exact: false }).fill("123456");
+  await page.getByRole("button", { name: "注册并继续", exact: true }).click();
+  await expect(page).toHaveURL(/#\/hotel\/qt$/);
+
+  await open(page, "/account");
+  await page.getByRole("button", { name: "退出演示账户", exact: true }).click();
+  await page.goto("/#/book/qt");
+  await expect(page.locator("h1")).toHaveText("登录账户");
+  await page.getByRole("button", { name: "注册顾客账户", exact: true }).click();
+  await expect(page).toHaveURL(/#\/register\?returnTo=%2Fbook%2Fqt$/);
+  await page.getByLabel("账户名", { exact: false }).fill("demo_guest2");
+  await page.getByLabel("密码", { exact: false }).fill("123456");
+  await page.getByRole("button", { name: "注册并继续", exact: true }).click();
+  await expect(page).toHaveURL(/#\/book\/qt$/);
+});
+
+test("日历历史只读与停用标示、统计筛选变更提醒、异常闭环恢复与日志对象跳转", async ({
+  page,
+}) => {
+  await open(page, "/staff/hotel");
+  await page
+    .locator(".room-edit-row")
+    .first()
+    .getByRole("button", { name: "编辑", exact: true })
+    .click();
+  await page.getByRole("switch", { name: "启用房型" }).click();
+  await page.getByRole("button", { name: "保存房型", exact: true }).click();
+
+  await open(page, "/staff/calendar");
+  await expect(page.locator(".calendar-room").getByText("已停用", { exact: true })).toBeVisible();
+  const prevWeek = page.getByRole("button", { name: "前一周", exact: true });
+  await expect(prevWeek).toBeEnabled();
+  await prevWeek.click();
+  await prevWeek.click();
+  await expect(page.locator(".day-cell.is-past").first()).toContainText("历史只读");
+
+  await open(page, "/staff/stats");
+  await page.getByLabel("房型", { exact: true }).selectOption("window");
+  await expect(page.getByText("筛选条件已变更", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "生成统计快照", exact: true }).click();
+  await expect(page.getByText("筛选条件已变更", { exact: false })).toHaveCount(0);
+
+  await open(page, "/staff/incidents");
+  const card = page.locator(".incident-contact").first();
+  await card
+    .getByLabel("联系 / 处理说明", { exact: false })
+    .fill("已联系顾客并登记酒店原因");
+  await card.getByRole("checkbox").check();
+  await card.getByRole("button", { name: "按酒店原因取消" }).click();
+  await page
+    .getByRole("checkbox", { name: /完成事件时同时解除影响范围的日历停售标记/ })
+    .check();
+  await page.getByRole("button", { name: "全部处理后完成事件" }).click();
+  await expect(
+    page.locator(".incident-detail").getByText("事件已完成", { exact: true }).first(),
+  ).toBeVisible();
+
+  await open(page, "/staff/audit");
+  const region = page.getByRole("region", { name: "审计记录" });
+  await region.getByRole("button", { name: "HB20260002" }).first().click();
+  await expect(page.getByRole("dialog")).toContainText("HB20260002");
+  await page.getByRole("button", { name: "关闭关联订单" }).click();
+  await region.getByRole("button", { name: "EV2026001" }).first().click();
+  await expect(page).toHaveURL(/#\/staff\/incidents\?id=EV2026001$/);
+});

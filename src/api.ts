@@ -71,6 +71,7 @@ export type Command = {
 export type CommandResult = {
   id?: string;
   order?: Order;
+  name?: string;
   phone?: string;
   photo?: HotelPhoto;
   problem?: { code: string; message: string; nights?: Night[] };
@@ -219,6 +220,15 @@ export const api = {
     ),
   stats: (start: string, end: string, room: string) =>
     request<Stats>(query("/stats", { start, end, room })),
+  incidentPreview: (
+    hotel: string,
+    room: string,
+    start: string,
+    end: string,
+  ) =>
+    request<{ count: number }>(
+      query("/incidents/preview", { hotel, room, start, end }),
+    ),
   uploadPhoto: async (
     hotel: string,
     file: Blob,

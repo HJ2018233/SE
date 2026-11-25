@@ -262,8 +262,8 @@ func TestPostgresBookingLifecycle(t *testing.T) {
 		t.Fatalf("unexpected checkout statistics %+v", stats)
 	}
 	reveal := command{Action: "contact", ID: orderID, Note: "stay"}
-	if contact := expectAPI[result](t, do(front, reveal), 200); contact.Phone != changed.Booking.Phone {
-		t.Fatal("authorized disclosure returned unexpected contact details")
+	if contact := expectAPI[result](t, do(front, reveal), 200); contact.Phone != changed.Booking.Phone || contact.Name != changed.Booking.Name {
+		t.Fatalf("authorized disclosure returned unexpected contact details: %+v", contact)
 	}
 	expectAPI[problem](t, do(adminToken, command{Action: "contact", ID: orderID, Note: "incident"}), 401)
 
@@ -302,23 +302,38 @@ func TestPostgresBookingLifecycle(t *testing.T) {
 	lateStay.Nights = lateOffer.Nights
 	affected := expectAPI[result](t, do(guestNow, command{Action: "book", Key: "incident-booking", Hotel: "qt", Booking: lateStay}), 200)
 	expectAPI[result](t, do(front, command{Action: "transition", ID: affected.ID, Mode: confirmed, Key: "confirm-incident-order"}), 200)
+	previewURL := fmt.Sprintf("/api/incidents/preview?hotel=qt&room=%s&start=%s&end=%s", lateStay.Room, lateStay.Start, lateStay.End)
+	adminToken = login("/api/login", "admin", "isolated-test-admin")
+	foreign = login("/api/login", "desk-xw", "isolated-test-staff")
+	expectAPI[problem](t, callAPI(handler, "GET", previewURL, guestNow, nil), 403)
+	expectAPI[problem](t, callAPI(handler, "GET", previewURL, foreign, nil), 403)
+	if preview := expectAPI[struct{ Count int }](t, callAPI(handler, "GET", previewURL, adminToken, nil), 200); preview.Count != 1 {
+		t.Fatalf("admin incident preview count = %d, want 1", preview.Count)
+	}
+	if preview := expectAPI[struct{ Count int }](t, callAPI(handler, "GET", previewURL, front, nil), 200); preview.Count != 1 {
+		t.Fatalf("staff incident preview count = %d, want 1", preview.Count)
+	}
 	event := expectAPI[result](t, do(front, command{Action: "incident_open", Hotel: "qt",
-		Incident: incident{Room: lateStay.Room, Start: lateStay.Start, End: lateStay.End, Title: "临时检修", Reason: "供水检修"},
+		Incident: incident{Room: lateStay.Room, Start: lateStay.Start, End: lateStay.End, Title: "临时检修", Reason: "供水检修\n需要停水"},
 	}), 200)
 	expectAPI[problem](t, do(front, command{Action: "incident_close", ID: event.ID}), 409)
 	touch := command{Action: "incident_update", ID: event.ID, Incident: incident{ID: affected.ID},
-		Mode: "contacting", Note: "首次未接通"}
+		Mode: "contacting", Note: "首次未接通\n稍后再拨"}
 	expectAPI[result](t, do(front, touch), 200)
 	stillConfirmed := expectAPI[order](t, callAPI(handler, "GET", "/api/orders/"+affected.ID, guestNow, nil), 200)
 	if stillConfirmed.Status != confirmed || stillConfirmed.Occupancy[lateStay.Start] != promised {
 		t.Fatalf("contacting changed the order or occupancy: %+v", stillConfirmed)
 	}
-	touch.Mode, touch.Note = "reached", "已联系并说明停业"
+	touch.Mode, touch.Note = "reached", "已联系并说明停业\n已登记处置"
 	expectAPI[result](t, do(front, touch), 200)
-	expectAPI[result](t, do(front, command{Action: "incident_close", ID: event.ID}), 200)
+	expectAPI[result](t, do(front, command{Action: "incident_close", ID: event.ID, Mode: "resume"}), 200)
 	afterIncident := expectAPI[order](t, callAPI(handler, "GET", "/api/orders/"+affected.ID, guestNow, nil), 200)
 	if afterIncident.Status != cancelled || afterIncident.Occupancy[lateStay.Start] != released {
 		t.Fatalf("hotel cancellation did not release the commitment: %+v", afterIncident)
+	}
+	afterCloseView := expectAPI[snapshot](t, callAPI(handler, "GET", "/api/state", front, nil), 200)
+	if afterCloseView.Calendar["qt/"+lateStay.Room+"/"+lateStay.Start].Stopped {
+		t.Fatal("incident_close with resume mode did not clear stopped flag")
 	}
 
 	setClock(time.UnixMilli(finished.Order.TerminalAt).Add(7 * 24 * time.Hour))
@@ -410,7 +425,16 @@ func TestHotelPhotosAndProfileLifecycle(t *testing.T) {
 		Hotel:  "qt",
 		Property: hotel{
 			Name: "秦淮 · 栖庭", City: "南京", District: "老门东",
-			Address: "南京市秦淮区庭院路 18 号", Phone: "025-00000001", Caption: "白墙青瓦与晨光。", Description: "更新简介",
+			Address: "南京市秦淮区庭院路 18 号", Phone: "025-00000001", Caption: "白墙青瓦与晨光。", Description: "更新简介\n支持多行段落",
+		},
+	}), 200)
+	expectAPI[result](t, do(front, command{
+		Action: "room",
+		Hotel:  "qt",
+		Room:   "qt-garden",
+		RoomType: room{
+			Name: "庭院大床房", Capacity: 2, Size: 32, Bed: "1 张 1.8m 大床",
+			Description: "庭院景观\n独立卫浴", Enabled: true,
 		},
 	}), 200)
 

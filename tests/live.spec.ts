@@ -95,6 +95,7 @@ test("三个独立会话完成工作人员分配、顾客预订、酒店确认�
     await desk
       .getByRole("button", { name: "登记用途并查看", exact: true })
       .click();
+    await expect(desk.getByText("测试旅客", { exact: true })).toBeVisible();
     await expect(desk.getByText("13800009911", { exact: true })).toBeVisible();
 
     await desk.goto(`${base}/#/staff/stats`);

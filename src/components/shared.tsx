@@ -24,6 +24,7 @@ import {
 import {
   addDays,
   days,
+  hotelRooms,
   isValidIsoDate,
   money,
   shortDate,
@@ -286,6 +287,20 @@ export function ConditionFields({
     }
     return [...set];
   }, [catalog.hotels]);
+  const availableRoomNames = useMemo(() => {
+    const set = new Set<string>();
+    for (const h of catalog.hotels) {
+      if (!h.enabled) continue;
+      for (const r of hotelRooms(catalog, h.id)) {
+        if (r.enabled && r.name.trim()) set.add(r.name.trim());
+      }
+    }
+    return [...set];
+  }, [catalog]);
+  const selectedRoomType =
+    value.type === "all" || availableRoomNames.includes(value.type)
+      ? value.type
+      : catalog.rooms.find((r) => r.id === value.type)?.name || value.type;
   const [peopleText, setPeopleText] = useState(() =>
     value.people > 0 ? String(value.people) : "",
   );
@@ -443,15 +458,19 @@ export function ConditionFields({
         <>
           <Field label="房型" className="span-2">
             <Select
-              value={value.type}
+              value={selectedRoomType}
               onChange={(_, d) => set("type", d.value)}
             >
               <option value="all">全部房型</option>
-              {catalog.rooms.map((room) => (
-                <option key={room.id} value={room.id}>
-                  {room.name}
+              {availableRoomNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
                 </option>
               ))}
+              {selectedRoomType !== "all" &&
+                !availableRoomNames.includes(selectedRoomType) && (
+                  <option value={selectedRoomType}>{selectedRoomType}</option>
+                )}
             </Select>
           </Field>
           <Field label="最低每晚价（元）">

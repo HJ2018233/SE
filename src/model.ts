@@ -127,6 +127,10 @@ export const TODAY = new Intl.DateTimeFormat("sv-SE", {
   month: "2-digit",
   day: "2-digit",
 }).format(new Date());
+export const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]{2,63}$/;
+export function utf8ByteLength(value: string) {
+  return new TextEncoder().encode(value).length;
+}
 export function normalizeDigits(input: string) {
   return input
     .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
@@ -808,7 +812,7 @@ export function roomMatches(
   room = hotelRoom(data, hotel, room.id);
   return (
     room.enabled &&
-    (c.type === "all" || room.id === c.type) &&
+    (c.type === "all" || room.id === c.type || room.name === c.type) &&
     c.people <= room.capacity * c.rooms &&
     days(c.start, c.end).every((date) => {
       const entry = calendarEntry(data, hotel, room.id, date);

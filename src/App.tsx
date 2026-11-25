@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Avatar,
   Badge,
@@ -112,9 +112,22 @@ export function App() {
   const [ready, setReady] = useState(prototype);
   const [initialError, setInitialError] = useState("");
   const refreshIndex = useRef(0);
-  const [path, setPath] = useState(
+  const [rawHash, setRawHash] = useState(
     () => window.location.hash.slice(1) || "/explore",
   );
+  const [path, queryString = ""] = rawHash.split("?");
+  const searchParams = useMemo(
+    () => new URLSearchParams(queryString),
+    [queryString],
+  );
+  const rawReturnTo = searchParams.get("returnTo") || "";
+  const safeReturnTo =
+    rawReturnTo.startsWith("/") &&
+    !rawReturnTo.startsWith("//") &&
+    rawReturnTo !== "/login" &&
+    rawReturnTo !== "/register"
+      ? rawReturnTo
+      : undefined;
   const [conditions, setConditions] = useState(initialConditions);
   const [signedIn, setSignedIn] = useState(
     () => prototype && sessionStorage.getItem(SESSION) === "true",
@@ -145,7 +158,7 @@ export function App() {
       : path;
   useEffect(() => {
     const onHash = () => {
-      setPath(window.location.hash.slice(1) || "/explore");
+      setRawHash(window.location.hash.slice(1) || "/explore");
       window.scrollTo(0, 0);
     };
     window.addEventListener("hashchange", onHash);
@@ -174,10 +187,11 @@ export function App() {
     mainRef.current?.focus({ preventScroll: true });
   }, [path]);
   const go = useCallback((next: string) => {
-    if (window.location.hash === `#${next}`) {
-      setPath(next);
-      window.scrollTo(0, 0);
-    } else window.location.hash = next;
+    setRawHash(next);
+    window.scrollTo(0, 0);
+    if (window.location.hash !== `#${next}`) {
+      window.location.hash = next;
+    }
   }, []);
   const notify = useCallback(
     (
@@ -210,10 +224,10 @@ export function App() {
     },
     [dispatchToast],
   );
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<DemoData | null> => {
     if (prototype) {
       setData((current) => ({ ...current }));
-      return;
+      return null;
     }
     const request = ++refreshIndex.current;
     let token = getToken();
@@ -235,15 +249,18 @@ export function App() {
         setData(emptyData);
         next = await api.state("");
       }
-      if (request !== refreshIndex.current || getToken() !== token) return;
-      setData({ ...next, connected: true });
+      if (request !== refreshIndex.current || getToken() !== token) return null;
+      const nextData: DemoData = { ...next, connected: true };
+      setData(nextData);
       setIdentity(next.account);
       setSignedIn(Boolean(next.account));
       setReady(true);
       setInitialError("");
+      return nextData;
     } catch (error) {
       if (request === refreshIndex.current)
         setInitialError(errorMessage(error));
+      return null;
     }
   }, []);
   useEffect(() => {
@@ -335,6 +352,17 @@ export function App() {
     );
   };
   const id = path.split("/")[2];
+  const isCustomerRoute =
+    path === "/" ||
+    path === "/explore" ||
+    path === "/orders" ||
+    path === "/account" ||
+    path.startsWith("/hotel/") ||
+    path.startsWith("/book/") ||
+    path.startsWith("/order/") ||
+    path.startsWith("/modify/");
+  const staffHotelPreview =
+    role === "staff" && Boolean(staffHotel) && path === `/hotel/${staffHotel}`;
   const requiresSignIn =
     (!prototype && routeRole !== "customer") ||
     (role === "customer" &&
@@ -361,6 +389,20 @@ export function App() {
         action={<Button onClick={() => go(tabs[0].path)}>返回工作台</Button>}
       />
     );
+  else if (!prototype && role !== "customer" && isCustomerRoute && !staffHotelPreview)
+    page = (
+      <Empty
+        title="此页面仅限顾客账户访问"
+        action={
+          <Button appearance="primary" onClick={() => go(tabs[0].path)}>
+            返回工作台
+          </Button>
+        }
+      >
+        当前以{role === "staff" ? "酒店工作人员" : "平台管理员"}
+        身份登录，如需体验顾客预订流程，请退出后使用顾客账户。
+      </Empty>
+    );
   else if (path === "/explore" || path === "/") page = <Explore />;
   else if (path.startsWith("/hotel/")) page = <HotelPage key={id} id={id} />;
   else if (path.startsWith("/book/")) page = <Booking key={id} id={id} />;
@@ -368,19 +410,40 @@ export function App() {
   else if (path.startsWith("/order/")) page = <OrderDetail key={id} id={id} />;
   else if (path.startsWith("/modify/")) page = <ModifyOrder key={id} id={id} />;
   else if (path === "/login" || path === "/register")
-    page = <AuthPage key={path} register={path === "/register"} />;
+    page = (
+      <AuthPage
+        key={`${path}-${safeReturnTo || ""}`}
+        register={path === "/register"}
+        returnTo={safeReturnTo}
+      />
+    );
   else if (path === "/account") page = <AccountPage />;
-  else if (path === "/staff/calendar") page = <CalendarPage />;
+  else if (path === "/staff/calendar")
+    page = (
+      <CalendarPage
+        initialDate={searchParams.get("date") || undefined}
+        scheduleRoom={searchParams.get("scheduleRoom") || undefined}
+      />
+    );
   else if (path === "/staff/orders") page = <StaffOrders />;
   else if (path === "/staff/hotel") page = <HotelSettings />;
   else if (path === "/staff/stats") page = <StatsPage />;
   else if (path === "/staff/incidents" || path === "/admin/incidents")
-    page = <IncidentsPage />;
+    page = <IncidentsPage initialId={searchParams.get("id") || undefined} />;
   else if (path === "/staff/audit" || path === "/admin/audit")
     page = <AuditPage />;
   else if (path === "/admin/hotels") page = <AdminHotels />;
   else if (path === "/admin/accounts") page = <AdminAccounts />;
-  else page = <Explore />;
+  else
+    page =
+      role === "customer" ? (
+        <Explore />
+      ) : (
+        <Empty
+          title="页面不存在"
+          action={<Button onClick={() => go(tabs[0].path)}>返回工作台</Button>}
+        />
+      );
   if (
     prototype &&
     role === "staff" &&
@@ -501,7 +564,15 @@ export function App() {
                   <MenuList>
                     {role === "customer" && (
                       <MenuItem
-                        onClick={() => go(signedIn ? "/account" : "/login")}
+                        onClick={() =>
+                          go(
+                            signedIn
+                              ? "/account"
+                              : path.startsWith("/hotel/")
+                                ? `/login?returnTo=${encodeURIComponent(path)}`
+                                : "/login",
+                          )
+                        }
                       >
                         {signedIn ? "个人中心" : "登录 / 注册"}
                       </MenuItem>
@@ -535,7 +606,13 @@ export function App() {
               {role === "customer" && !signedIn && (
                 <Button
                   appearance="primary"
-                  onClick={() => go("/login")}
+                  onClick={() =>
+                    go(
+                      path.startsWith("/hotel/")
+                        ? `/login?returnTo=${encodeURIComponent(path)}`
+                        : "/login",
+                    )
+                  }
                   className="header-login"
                 >
                   登录

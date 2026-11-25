@@ -289,7 +289,7 @@ func changeOrder(ctx context.Context, tx pgx.Tx, a account, now time.Time, c com
 	if !orderScope(a, o) {
 		return result{}, missing()
 	}
-	note := cleanText(c.Note, 200)
+	note := cleanMultilineText(c.Note, 200)
 	if c.Note != "" && note == "" {
 		return result{}, bad("请检查处理原因长度和内容")
 	}

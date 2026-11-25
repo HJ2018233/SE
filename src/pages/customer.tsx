@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Avatar,
   Badge,
@@ -56,9 +56,11 @@ import {
   shortDate,
   statuses,
   total,
+  USERNAME_PATTERN,
+  utf8ByteLength,
   validConditions,
 } from "../model";
-import type { Conditions, Hotel, Night, Order } from "../model";
+import type { Conditions, Hotel, Night, Order, Room } from "../model";
 import {
   Back,
   ConditionsDialog,
@@ -112,30 +114,47 @@ export function Explore() {
       active = false;
     };
   }, [connected, conditions, offerOffset]);
-  const offer = (hotel: Hotel) =>
-    hotelRooms(data, hotel.id)
-      .filter((room) =>
-        connected
-          ? liveOffers?.some((o) => o.room === room.id)
-          : roomMatches(data, hotel.id, room, conditions),
-      )
-      .sort(
-        (a, b) =>
-          total(quote(data, hotel.id, a.id, conditions)) -
-          total(quote(data, hotel.id, b.id, conditions)),
-      )[0];
+  const liveBestByHotel = useMemo(() => {
+    const map = new Map<string, { room: Room; nights: Night[]; total: number }>();
+    if (!connected || !liveOffers) return map;
+    for (const item of liveOffers) {
+      const roomObj = hotelRoom(data, item.hotel, item.room);
+      if (!roomObj || !item.nights?.length) continue;
+      const existing = map.get(item.hotel);
+      if (!existing || item.total < existing.total) {
+        map.set(item.hotel, {
+          room: roomObj,
+          nights: item.nights,
+          total: item.total,
+        });
+      }
+    }
+    return map;
+  }, [connected, liveOffers, data]);
+  const bestOffer = (
+    hotel: Hotel,
+  ): { room: Room; nights: Night[]; total: number } | undefined => {
+    if (connected) return liveBestByHotel.get(hotel.id);
+    return hotelRooms(data, hotel.id)
+      .filter((room) => roomMatches(data, hotel.id, room, conditions))
+      .map((room) => {
+        const nights = quote(data, hotel.id, room.id, conditions);
+        return { room, nights, total: total(nights, conditions.rooms) };
+      })
+      .sort((a, b) => a.total - b.total)[0];
+  };
   const hotels = data.hotels.filter(
     (h) =>
-      h.enabled && (connected || h.city === conditions.city.trim()) && offer(h),
+      h.enabled && (connected || h.city === conditions.city.trim()) && bestOffer(h),
   );
   if (sort === "price")
     hotels.sort(
       (a, b) =>
-        total(quote(data, a.id, offer(a).id, conditions)) -
-          total(quote(data, b.id, offer(b).id, conditions)) ||
+        (bestOffer(a)?.total || 0) - (bestOffer(b)?.total || 0) ||
         a.id.localeCompare(b.id),
     );
   const featured = hotels[0],
+    featuredOffer = featured ? bestOffer(featured) : undefined,
     count = days(conditions.start, conditions.end).length;
   const activeFilterCount =
     (conditions.type !== "all" ? 1 : 0) +
@@ -144,7 +163,7 @@ export function Explore() {
   const hasFilters = activeFilterCount > 0;
   const activeFilterRoom =
     conditions.type !== "all"
-      ? data.rooms.find((r) => r.id === conditions.type)?.name
+      ? data.rooms.find((r) => r.id === conditions.type)?.name || conditions.type
       : "";
   const featuredPhotos = hotelPhotos(featured);
   return (
@@ -287,31 +306,11 @@ export function Explore() {
                     <p className="muted">{featured.caption}</p>
                   )}
                   <div className="ticket-price">
-                    <Price
-                      value={
-                        quote(
-                          data,
-                          featured.id,
-                          offer(featured).id,
-                          conditions,
-                        )[0].price
-                      }
-                    />
+                    <Price value={featuredOffer!.nights[0].price} />
                     <span className="muted">起 / 每晚单间</span>
                     <span className="muted">
                       {count} 晚 {conditions.rooms} 间合计{" "}
-                      {money(
-                        total(
-                          quote(
-                            data,
-                            featured.id,
-                            offer(featured).id,
-                            conditions,
-                          ),
-                          conditions.rooms,
-                        ),
-                      )}{" "}
-                      起
+                      {money(featuredOffer!.total)} 起
                     </span>
                   </div>
                 </div>
@@ -351,6 +350,7 @@ export function Explore() {
               <div className="hotel-grid">
                 {hotels.slice(1).map((h, index) => {
                   const hPhotos = hotelPhotos(h);
+                  const hOffer = bestOffer(h)!;
                   return (
                     <article
                       className="hotel-card"
@@ -386,14 +386,9 @@ export function Explore() {
                           </Text>
                         )}
                         <p className="muted">
-                          {offer(h).name} · 每间可住 {offer(h).capacity} 人
+                          {hOffer.room.name} · 每间可住 {hOffer.room.capacity} 人
                         </p>
-                        <Price
-                          value={total(
-                            quote(data, h.id, offer(h).id, conditions),
-                            conditions.rooms,
-                          )}
-                        />
+                        <Price value={hOffer.total} />
                         <Text className="muted" size={200}>
                           {count} 晚 {conditions.rooms} 间合计起
                         </Text>
@@ -772,6 +767,8 @@ export function Booking({ id }: { id: string }) {
     [result, setResult] = useState("");
   const locked = useRef(false);
   const [accepted, setAccepted] = useState<Night[]>([]);
+  const [quoteLoading, setQuoteLoading] = useState(connected);
+  const [quoteAttempt, setQuoteAttempt] = useState(0);
   const [freshQuote, setFreshQuote] = useState<Night[]>();
   const storageKey = `hotel-book-operation-${id}`;
   const [uncertain, setUncertain] = useState(() =>
@@ -782,9 +779,13 @@ export function Booking({ id }: { id: string }) {
   const nights = connected
     ? accepted
     : quote(data, id, roomId, conditions, delta);
+  const quoteReady = !connected || (!quoteLoading && nights.length > 0);
   useEffect(() => {
     if (!connected || !roomId) return;
     let active = true;
+    setQuoteLoading(true);
+    setAccepted([]);
+    setError("");
     void api
       .quote(id, {
         room: roomId,
@@ -798,11 +799,14 @@ export function Booking({ id }: { id: string }) {
       })
       .catch((cause) => {
         if (active) setError(errorMessage(cause));
+      })
+      .finally(() => {
+        if (active) setQuoteLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [connected, conditions, id, roomId]);
+  }, [connected, conditions, id, roomId, quoteAttempt]);
   const clearOperation = () => {
     sessionStorage.removeItem(storageKey);
     setUncertain("");
@@ -1085,13 +1089,28 @@ export function Booking({ id }: { id: string }) {
               核对报价并提交
             </Text>
             <div className="mobile-quote-only">
-              <NightQuote nights={nights} rooms={conditions.rooms} />
+              {connected && quoteLoading ? (
+                <Spinner size="small" label="正在获取实时逐晚报价…" />
+              ) : connected && !nights.length ? (
+                <Notice intent="warning">
+                  暂无有效逐晚报价，请返回房型页重新选择或重试获取。
+                </Notice>
+              ) : (
+                <NightQuote nights={nights} rooms={conditions.rooms} />
+              )}
             </div>
             <div className="booking-submit-box">
               <Checkbox
                 checked={consent}
+                disabled={!quoteReady}
                 onChange={(_, d) => setConsent(Boolean(d.checked))}
-                label={`我已核对入住信息、逐晚价格及整段总额 ${money(total(nights, conditions.rooms))}`}
+                label={
+                  connected && quoteLoading
+                    ? "正在核对实时逐晚报价…"
+                    : quoteReady
+                      ? `我已核对入住信息、逐晚价格及整段总额 ${money(total(nights, conditions.rooms))}`
+                      : "当前暂无有效报价，请返回调整日期或房型"
+                }
               />
               {attempted && !consent && (
                 <Text role="alert" size={200} className="field-inline-error">
@@ -1099,6 +1118,16 @@ export function Booking({ id }: { id: string }) {
                 </Text>
               )}
               {error && <Notice intent="error">{error}</Notice>}
+              {connected && !quoteLoading && !nights.length && (
+                <div>
+                  <Button
+                    size="small"
+                    onClick={() => setQuoteAttempt((n) => n + 1)}
+                  >
+                    重新获取报价
+                  </Button>
+                </div>
+              )}
               {connected && uncertain && (
                 <div>
                   <Button disabled={busy} onClick={() => void checkResult()}>
@@ -1129,7 +1158,7 @@ export function Booking({ id }: { id: string }) {
                     type="submit"
                     appearance="primary"
                     size="large"
-                    disabled={busy}
+                    disabled={busy || (!quoteReady && !uncertain)}
                     icon={busy ? <Spinner size="tiny" /> : undefined}
                   >
                     {busy
@@ -1161,7 +1190,15 @@ export function Booking({ id }: { id: string }) {
             {[hotel.district, room.name].filter(Boolean).join(" · ")}
           </p>
           <StaySummary conditions={conditions} />
-          <NightQuote nights={nights} rooms={conditions.rooms} compact />
+          {connected && quoteLoading ? (
+            <Spinner size="small" label="正在获取实时逐晚报价…" />
+          ) : connected && !nights.length ? (
+            <Notice intent="warning">
+              当前无可确认的逐晚报价，请返回房型页重新查询。
+            </Notice>
+          ) : (
+            <NightQuote nights={nights} rooms={conditions.rooms} compact />
+          )}
           <p className="muted space-top">
             人民币 · 每晚单间价 × 间数，无其他附加费用。
           </p>
@@ -1212,6 +1249,7 @@ export function Orders() {
   const { data, go, connected } = useApp();
   const [hotel, setHotel] = useState("all"),
     [state, setState] = useState("all"),
+    [search, setSearch] = useState(""),
     [start, setStart] = useState(""),
     [end, setEnd] = useState("");
   const [filterOpen, setFilterOpen] = useState(false);
@@ -1220,7 +1258,7 @@ export function Orders() {
   const [listError, setListError] = useState("");
   useEffect(() => {
     setOffset(0);
-  }, [hotel, state, start, end]);
+  }, [hotel, state, search, start, end]);
   useEffect(() => {
     if (!connected) return;
     let active = true;
@@ -1228,6 +1266,7 @@ export function Orders() {
       .orders({
         hotel: hotel === "all" ? "" : hotel,
         status: state === "all" ? "" : state,
+        search: search.trim(),
         start,
         end,
         limit: 20,
@@ -1248,7 +1287,7 @@ export function Orders() {
     return () => {
       active = false;
     };
-  }, [connected, hotel, state, start, end, offset, data.orders]);
+  }, [connected, hotel, state, search, start, end, offset, data.orders]);
   const orders = connected
     ? serverOrders
     : data.orders
@@ -1257,6 +1296,8 @@ export function Orders() {
             o.owner === "me" &&
             (hotel === "all" || o.hotel === hotel) &&
             (state === "all" || o.status === state) &&
+            (!search.trim() ||
+              o.id.toLowerCase().includes(search.trim().toLowerCase())) &&
             (!start || o.start >= start) &&
             (!end || o.start < end),
         )
@@ -1264,17 +1305,26 @@ export function Orders() {
   const activeFilterCount =
     (hotel !== "all" ? 1 : 0) +
     (state !== "all" ? 1 : 0) +
+    (search.trim() !== "" ? 1 : 0) +
     (start !== "" ? 1 : 0) +
     (end !== "" ? 1 : 0);
   const hasFilters = activeFilterCount > 0;
   const resetFilters = () => {
     setHotel("all");
     setState("all");
+    setSearch("");
     setStart("");
     setEnd("");
   };
   const filterFields = (
     <>
+      <Field label="查找订单编号">
+        <Input
+          value={search}
+          onChange={(_, d) => setSearch(d.value)}
+          placeholder="输入订单编号"
+        />
+      </Field>
       <Field label="酒店">
         <Select value={hotel} onChange={(_, d) => setHotel(d.value)}>
           <option value="all">全部酒店</option>
@@ -1470,18 +1520,7 @@ export function Orders() {
       ) : (
         <Empty
           title="没有符合条件的订单"
-          action={
-            <Button
-              onClick={() => {
-                setHotel("all");
-                setState("all");
-                setStart("");
-                setEnd("");
-              }}
-            >
-              清除筛选
-            </Button>
-          }
+          action={<Button onClick={resetFilters}>清除筛选</Button>}
         >
           调整筛选条件，或去探索新的住宿。
         </Empty>
@@ -1809,6 +1848,10 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
   const expectedVersion = useRef(order?.version);
   const attempt = useRef({ fingerprint: "", key: "" });
   const [liveQuote, setLiveQuote] = useState<Night[]>();
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [priceDialog, setPriceDialog] = useState(false);
+  const [staleQuote, setStaleQuote] = useState<Night[]>([]);
+  const [freshQuote, setFreshQuote] = useState<Night[]>([]);
   const changed = Boolean(
     order &&
     (draft.start !== order.start ||
@@ -1817,8 +1860,14 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
       roomId !== order.room),
   );
   useEffect(() => {
-    if (!connected || !changed || !hotel || !order) return;
+    if (!connected || !hotel || !order) return;
+    if (!changed) {
+      setQuoteLoading(false);
+      setLiveQuote(undefined);
+      return;
+    }
     let active = true;
+    setQuoteLoading(true);
     setLiveQuote(undefined);
     setError("");
     void api
@@ -1838,6 +1887,9 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
       })
       .catch((cause) => {
         if (active) setError(errorMessage(cause));
+      })
+      .finally(() => {
+        if (active) setQuoteLoading(false);
       });
     return () => {
       active = false;
@@ -1877,6 +1929,15 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
       ? liveQuote || []
       : quote(data, hotel.id, roomId, draft)
     : order.nights;
+  const newQuoteReady = !reprice || !connected || (!quoteLoading && nights.length > 0);
+  const changedDates = new Set(
+    freshQuote
+      .filter(
+        (n, idx) =>
+          staleQuote[idx]?.date !== n.date || staleQuote[idx]?.price !== n.price,
+      )
+      .map((n) => n.date),
+  );
   const save = async () => {
     if (busy) return;
     setError("");
@@ -1934,10 +1995,13 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
           cause.code === "price_changed" &&
           cause.nights
         ) {
-          setLiveQuote(cause.nights);
-          setConsent(false);
+          setStaleQuote(nights);
+          setFreshQuote(cause.nights);
+          setPriceDialog(true);
+          setError(errorMessage(cause));
+        } else {
+          setError(errorMessage(cause));
         }
-        setError(errorMessage(cause));
       } finally {
         setBusy(false);
       }
@@ -2090,11 +2154,23 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
                 {room.name}
               </Text>
               <StaySummary conditions={draft} />
-              <NightQuote
-                nights={nights}
-                rooms={draft.rooms}
-                label={reprice ? "新逐晚报价" : "保留原逐晚报价"}
-              />
+              {reprice && connected && quoteLoading ? (
+                <div className="space-top">
+                  <Spinner size="small" label="正在核对新方案实时报价…" />
+                </div>
+              ) : reprice && connected && !nights.length ? (
+                <div className="space-top">
+                  <Notice intent="warning">
+                    当前新方案暂不可订，无法生成报价；原订单持续有效。
+                  </Notice>
+                </div>
+              ) : (
+                <NightQuote
+                  nights={nights}
+                  rooms={draft.rooms}
+                  label={reprice ? "新逐晚报价" : "保留原逐晚报价"}
+                />
+              )}
             </div>
           </div>
         </section>
@@ -2108,7 +2184,13 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
           </div>
           <div className="quote-total">
             <span>新报价</span>
-            <Price value={total(nights, draft.rooms)} />
+            {reprice && connected && quoteLoading ? (
+              <Text className="muted">核对中…</Text>
+            ) : reprice && connected && !nights.length ? (
+              <Text className="muted">当前不可订</Text>
+            ) : (
+              <Price value={total(nights, draft.rooms)} />
+            )}
           </div>
           <p className="muted space-top">
             {reprice
@@ -2118,6 +2200,7 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
           {reprice && (
             <Checkbox
               checked={consent}
+              disabled={!newQuoteReady}
               onChange={(_, d) => setConsent(Boolean(d.checked))}
               label="我已核对并同意新方案的逐晚报价与总额"
             />
@@ -2131,7 +2214,7 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
             className="primary-action"
             size="large"
             appearance="primary"
-            disabled={busy}
+            disabled={busy || (reprice && connected && !newQuoteReady)}
             onClick={() => void save()}
           >
             {busy ? "正在核对新方案…" : "确认修改"}
@@ -2145,6 +2228,40 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
           </Button>
         </aside>
       </div>
+      <ConfirmDialog
+        wide
+        open={priceDialog}
+        title="新方案价格有更新，请重新核对"
+        confirm="使用新报价，继续核对"
+        onClose={() => setPriceDialog(false)}
+        onConfirm={() => {
+          setLiveQuote(freshQuote);
+          setConsent(false);
+          setPriceDialog(false);
+          setError("报价已更新，请核对新价格并重新勾选同意后确认修改。");
+        }}
+      >
+        <p className="muted">
+          本次尚未改订，原订单及房量占用保持不变。请比较更新前后的逐晚价格。
+        </p>
+        <div className="compare-grid space-top">
+          <div className="compare-panel">
+            <NightQuote
+              label="上次报价"
+              nights={staleQuote}
+              rooms={draft.rooms}
+            />
+          </div>
+          <div className="compare-panel new">
+            <NightQuote
+              label="当前报价"
+              nights={freshQuote}
+              rooms={draft.rooms}
+              changedDates={changedDates}
+            />
+          </div>
+        </div>
+      </ConfirmDialog>
     </>
   );
 }
@@ -2190,6 +2307,18 @@ export function AuthPage({
     }
   };
   const minPassword = connected && register ? 10 : connected ? 1 : 6;
+  const normalizedAccount = account.trim().toLowerCase();
+  const usernameInvalid =
+    connected &&
+    register &&
+    Boolean(normalizedAccount) &&
+    !USERNAME_PATTERN.test(normalizedAccount);
+  const passwordTooShort =
+    connected && register
+      ? utf8ByteLength(password) < 10
+      : password.length < minPassword;
+  const passwordTooLong =
+    connected && register && utf8ByteLength(password) > 256;
   return (
     <>
       <Back to="/explore" label="继续浏览酒店" />
@@ -2216,7 +2345,13 @@ export function AuthPage({
           onSubmit={(event) => {
             event.preventDefault();
             setAttempted(true);
-            if (account.trim() && password.length >= minPassword) void finish();
+            if (
+              account.trim() &&
+              !usernameInvalid &&
+              !passwordTooShort &&
+              !passwordTooLong
+            )
+              void finish();
           }}
         >
           <div>
@@ -2237,9 +2372,24 @@ export function AuthPage({
           <Field
             label="账户名"
             required
-            validationState={attempted && !account.trim() ? "error" : "none"}
+            hint={
+              connected && register
+                ? "3–64 位小写字母、数字或 ._-，需以字母或数字开头"
+                : undefined
+            }
+            validationState={
+              attempted && (!account.trim() || usernameInvalid)
+                ? "error"
+                : "none"
+            }
             validationMessage={
-              attempted && !account.trim() ? "请填写账户名。" : undefined
+              attempted
+                ? !account.trim()
+                  ? "请填写账户名。"
+                  : usernameInvalid
+                    ? "账号须为 3 至 64 位小写字母、数字或 ._-，且以字母或数字开头。"
+                    : undefined
+                : undefined
             }
           >
             <Input
@@ -2252,14 +2402,25 @@ export function AuthPage({
           <Field
             label="密码"
             required
+            hint={
+              connected && register
+                ? "至少 10 位字符（10–256 字节）"
+                : undefined
+            }
             validationState={
-              attempted && password.length < minPassword ? "error" : "none"
+              attempted && (passwordTooShort || passwordTooLong)
+                ? "error"
+                : "none"
             }
             validationMessage={
-              attempted && password.length < minPassword
-                ? register || !connected
-                  ? `密码至少填写 ${minPassword} 个字符。`
-                  : "请填写密码。"
+              attempted
+                ? passwordTooLong
+                  ? "密码长度不能超过 256 字节。"
+                  : passwordTooShort
+                    ? register || !connected
+                      ? `密码至少填写 ${minPassword} 个字符。`
+                      : "请填写密码。"
+                    : undefined
                 : undefined
             }
           >
@@ -2281,13 +2442,24 @@ export function AuthPage({
             {busy ? "正在验证…" : register ? "注册并继续" : "登录并继续"}
           </Button>
           {!connected && (
-            <Button onClick={() => void finish()}>使用顾客示例账户体验</Button>
+            <Button type="button" onClick={() => void finish()}>
+              使用顾客示例账户体验
+            </Button>
           )}
           <p className="muted">
             {register ? "已有账户？" : "还没有账户？"}{" "}
             <Button
+              type="button"
               appearance="transparent"
-              onClick={() => go(register ? "/login" : "/register")}
+              onClick={() =>
+                go(
+                  returnTo
+                    ? `${register ? "/login" : "/register"}?returnTo=${encodeURIComponent(returnTo)}`
+                    : register
+                      ? "/login"
+                      : "/register",
+                )
+              }
             >
               {register ? "去登录" : "注册顾客账户"}
             </Button>

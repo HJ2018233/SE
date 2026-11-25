@@ -34,7 +34,7 @@ import {
   Open20Regular,
 } from "@fluentui/react-icons";
 import { useApp } from "../context";
-import { api, errorMessage, operationKey } from "../api";
+import { api, ApiError, errorMessage, operationKey } from "../api";
 import {
   activeStatuses,
   hotelPhotos,
@@ -59,6 +59,8 @@ import {
   statuses,
   TODAY,
   total,
+  USERNAME_PATTERN,
+  utf8ByteLength,
   weekday,
 } from "../model";
 import type {
@@ -85,15 +87,30 @@ import { HotelImage } from "../components/HotelImage";
 import { HotelGallery } from "../components/HotelGallery";
 import { PhotoManager } from "../components/PhotoManager";
 
-export function CalendarPage() {
-  const { data, update, audit, notify, staffHotel, connected, command } =
+export function CalendarPage({
+  initialDate,
+  scheduleRoom,
+}: {
+  initialDate?: string;
+  scheduleRoom?: string;
+} = {}) {
+  const { data, update, audit, notify, staffHotel, connected, command, refresh } =
     useApp();
   const hotelName =
     data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
   const roomsList = hotelRooms(data, staffHotel);
   const baseCalendar = useRef(data.calendar);
-  const [start, setStart] = useState(initialConditions.start),
-    [focused, setFocused] = useState(initialConditions.start);
+  const handledScheduleRoom = useRef("");
+  const [start, setStart] = useState(() =>
+      initialDate && isValidIsoDate(initialDate)
+        ? initialDate
+        : initialConditions.start,
+    ),
+    [focused, setFocused] = useState(() =>
+      initialDate && isValidIsoDate(initialDate)
+        ? initialDate
+        : initialConditions.start,
+    );
   const [edit, setEdit] = useState<{ room: string; date: string } | null>(null);
   const [editStart, setEditStart] = useState(""),
     [editEnd, setEditEnd] = useState(""),
@@ -121,6 +138,21 @@ export function CalendarPage() {
     loadRoomValues(room, date);
     setError("");
   };
+
+  useEffect(() => {
+    if (initialDate && isValidIsoDate(initialDate)) {
+      setStart(initialDate);
+      setFocused(initialDate);
+    }
+  }, [initialDate]);
+
+  useEffect(() => {
+    if (!scheduleRoom || handledScheduleRoom.current === scheduleRoom) return;
+    const target = roomsList.find((r) => r.id === scheduleRoom);
+    if (!target) return;
+    handledScheduleRoom.current = scheduleRoom;
+    open(target.id, start < TODAY ? TODAY : start);
+  }, [scheduleRoom, roomsList, start]);
 
   const switchEditRoom = (nextRoom: string) => {
     if (!edit) return;
@@ -202,7 +234,24 @@ export function CalendarPage() {
         setEdit(null);
         notify("所选日期已一起保存。已有订单的价格快照保持不变。");
       } catch (cause) {
-        setError(errorMessage(cause));
+        if (cause instanceof ApiError && cause.code === "calendar_conflict") {
+          const latest = await refresh();
+          if (latest) baseCalendar.current = latest.calendar;
+          const conflictDate = cause.date;
+          const latestEntry =
+            conflictDate && latest
+              ? latest.calendar[entryKey(staffHotel, edit.room, conflictDate)]
+              : undefined;
+          const detail =
+            conflictDate && latestEntry
+              ? `冲突日期 ${shortDate(conflictDate)} 当前总量 ${latestEntry.total}、有效占用 ${latestEntry.occupied || 0}、价格 ${money(latestEntry.price)}${latestEntry.stopped ? "（已停售）" : ""}。已同步最新日历版本，调整后可直接重试保存。`
+              : conflictDate
+                ? `冲突日期 ${shortDate(conflictDate)} 的房量或版本已更新，已同步最新版本，请核对后重试保存。`
+                : errorMessage(cause);
+          setError(`${errorMessage(cause)}：${detail}`);
+        } else {
+          setError(errorMessage(cause));
+        }
       }
       return;
     }
@@ -238,24 +287,66 @@ export function CalendarPage() {
     notify("所选日期已一起保存。已有订单的价格快照保持不变。");
   };
   const cell = (room: Room, date: string) => {
+    const isPast = date < TODAY;
     const entry = calendarEntry(data, staffHotel, room.id, date),
       used = occupied(data, staffHotel, room.id, date),
-      sellable = available(data, staffHotel, room.id, date),
+      sellable = isPast ? 0 : available(data, staffHotel, room.id, date),
       incBlocked = incidentBlocked(data, staffHotel, room.id, date),
       unscheduled = connected && entry.version === 0,
       soldOut =
-        sellable === 0 && !incBlocked && !entry.stopped && !unscheduled,
+        !isPast &&
+        sellable === 0 &&
+        !incBlocked &&
+        !entry.stopped &&
+        !unscheduled,
       lowStock =
-        sellable > 0 && sellable <= 2 && !incBlocked && !entry.stopped && !unscheduled;
-    const statusLabel = incBlocked
-      ? "异常停售"
-      : unscheduled
-        ? "未排期"
-        : entry.stopped
-          ? "已停售"
-          : soldOut
-            ? "已满房"
-            : `可订 ${sellable} 间`;
+        !isPast &&
+        sellable > 0 &&
+        sellable <= 2 &&
+        !incBlocked &&
+        !entry.stopped &&
+        !unscheduled;
+    const statusLabel = isPast
+      ? unscheduled
+        ? "未排期 · 历史"
+        : "历史只读"
+      : incBlocked
+        ? "异常停售"
+        : unscheduled
+          ? "未排期"
+          : !room.enabled
+            ? "房型已停用"
+            : entry.stopped
+              ? "已停售"
+              : soldOut
+                ? "已满房"
+                : `可订 ${sellable} 间`;
+    if (isPast) {
+      return (
+        <div
+          key={`${room.id}-${date}`}
+          role="group"
+          aria-label={`${room.name} ${shortDate(date)}，${unscheduled ? "未排期" : money(entry.price)}，历史只读`}
+          className="day-cell is-past"
+        >
+          <Text size={400} weight="semibold">
+            {unscheduled ? "—" : money(entry.price)}
+          </Text>
+          <span className="day-status muted">{statusLabel}</span>
+          <div className="occupancy-track" aria-hidden="true">
+            <div
+              className="occupancy-fill"
+              style={{
+                width: `${entry.total ? Math.min(100, (used / entry.total) * 100) : 0}%`,
+              }}
+            />
+          </div>
+          <Text size={200} className="muted">
+            占用 {used} / 总量 {entry.total}
+          </Text>
+        </div>
+      );
+    }
     return (
       <Button
         key={`${room.id}-${date}`}
@@ -314,10 +405,8 @@ export function CalendarPage() {
           <Button
             icon={<ArrowLeft20Regular />}
             aria-label="前一周"
-            disabled={start <= TODAY}
             onClick={() => {
-              const next =
-                addDays(start, -7) < TODAY ? TODAY : addDays(start, -7);
+              const next = addDays(start, -7);
               setStart(next);
               setFocused(next);
             }}
@@ -351,9 +440,8 @@ export function CalendarPage() {
             <FluentDatePicker
               aria-label="跳转至指定周起始日"
               value={start}
-              minDate={TODAY}
               onChange={(next) => {
-                if (isValidIsoDate(next) && next >= TODAY) {
+                if (isValidIsoDate(next)) {
                   setStart(next);
                   setFocused(next);
                 }
@@ -364,7 +452,10 @@ export function CalendarPage() {
             appearance="primary"
             icon={<Edit20Regular />}
             disabled={!roomsList.length}
-            onClick={() => roomsList[0] && open(roomsList[0].id, start)}
+            onClick={() =>
+              roomsList[0] &&
+              open(roomsList[0].id, start < TODAY ? TODAY : start)
+            }
           >
             批量维护日期
           </Button>
@@ -392,7 +483,14 @@ export function CalendarPage() {
             {roomsList.map((room) => (
               <div style={{ display: "contents" }} key={room.id}>
                 <div className="calendar-room">
-                  <Text weight="semibold">{room.name}</Text>
+                  <div className="inline">
+                    <Text weight="semibold">{room.name}</Text>
+                    {!room.enabled && (
+                      <Badge appearance="tint" color="subtle" size="small">
+                        已停用
+                      </Badge>
+                    )}
+                  </div>
                   <Text size={200} className="muted">
                     {room.size} m² · {room.capacity} 人 / 间
                   </Text>
@@ -412,16 +510,31 @@ export function CalendarPage() {
               </Select>
             </Field>
             {roomsList.map((room) => {
+              const isPast = focused < TODAY;
               const entry = calendarEntry(data, staffHotel, room.id, focused);
-              const sellable = available(data, staffHotel, room.id, focused);
+              const sellable = isPast
+                ? 0
+                : available(data, staffHotel, room.id, focused);
+              const unscheduled = connected && entry.version === 0;
               return (
                 <article className="room-edit-row" key={room.id}>
                   <div>
-                    <Text size={400} weight="semibold">
-                      {room.name}
-                    </Text>
+                    <div className="inline">
+                      <Text size={400} weight="semibold">
+                        {room.name}
+                      </Text>
+                      {!room.enabled && (
+                        <Badge appearance="tint" color="subtle" size="small">
+                          已停用
+                        </Badge>
+                      )}
+                    </div>
                     <p className="space-top">
-                      <Price value={entry.price} />
+                      {unscheduled ? (
+                        <Text weight="semibold">—</Text>
+                      ) : (
+                        <Price value={entry.price} />
+                      )}
                     </p>
                     <p className="muted">
                       可订 {sellable} · 剩余{" "}
@@ -429,7 +542,13 @@ export function CalendarPage() {
                       总量 {entry.total}
                     </p>
                   </div>
-                  <Button onClick={() => open(room.id, focused)}>编辑</Button>
+                  {isPast ? (
+                    <Badge appearance="tint" color="subtle">
+                      历史只读
+                    </Badge>
+                  ) : (
+                    <Button onClick={() => open(room.id, focused)}>编辑</Button>
+                  )}
                 </article>
               );
             })}
@@ -444,7 +563,7 @@ export function CalendarPage() {
         <span>
           每晚单间价 · 人民币　／　占用条包含预占、承诺、在住占用与已消费
         </span>
-        <span>结束日期不计入住宿日</span>
+        <span>历史日期只读 · 结束日期不计入住宿日</span>
       </div>
       <ConfirmDialog
         open={Boolean(edit)}
@@ -630,6 +749,7 @@ function OrderInspector({
     [contactOpen, setContactOpen] = useState(false),
     [purpose, setPurpose] = useState(""),
     [revealed, setRevealed] = useState(false);
+  const [fullName, setFullName] = useState("");
   const [fullPhone, setFullPhone] = useState("");
   const retry = useRef({ input: "", key: "" });
   const [busy, setBusy] = useState(false);
@@ -786,10 +906,12 @@ function OrderInspector({
             <div className="fact">
               <span className="fact-label">联系人</span>
               <div className="fact-value">
-                {revealed && !connected
-                  ? order.name
-                  : expiredPrivacy
-                    ? "已到期清理"
+                {expiredPrivacy
+                  ? "已到期清理"
+                  : revealed
+                    ? connected
+                      ? fullName || "—"
+                      : order.name
                     : "按需查看"}
               </div>
             </div>
@@ -939,7 +1061,11 @@ function OrderInspector({
             label={action === "已取消" ? "未到店原因" : "拒绝原因"}
             required
           >
-            <Textarea value={reason} onChange={(_, d) => setReason(d.value)} />
+            <Textarea
+              value={reason}
+              onChange={(_, d) => setReason(d.value)}
+              maxLength={200}
+            />
           </Field>
         ) : action === "已入住" ? (
           <p>
@@ -992,6 +1118,7 @@ function OrderInspector({
                 note: purpose,
                 incident: related ? { id: related } : undefined,
               });
+              setFullName(value.name || "");
               setFullPhone(value.phone || "");
               setRevealed(true);
               setContactOpen(false);
@@ -1456,6 +1583,23 @@ export function HotelSettings() {
   };
   const photos = hotelPhotos(hotel);
   const roomsList = hotelRooms(data, staffHotel);
+  const scheduledRoomIds = useMemo(() => {
+    const ids = new Set<string>();
+    const prefix = `${staffHotel}/`;
+    for (const [key, entry] of Object.entries(data.calendar)) {
+      if (!key.startsWith(prefix)) continue;
+      const lastSlash = key.lastIndexOf("/");
+      const date = key.slice(lastSlash + 1);
+      const roomId = key.slice(prefix.length, lastSlash);
+      if (date >= TODAY && entry.version > 0 && entry.price > 0) {
+        ids.add(roomId);
+      }
+    }
+    return ids;
+  }, [data.calendar, staffHotel]);
+  const unscheduledEnabledRooms = connected
+    ? roomsList.filter((r) => r.enabled && !scheduledRoomIds.has(r.id))
+    : [];
   const previewPrice = roomsList[0]?.price || 46800;
   return (
     <>
@@ -1556,6 +1700,7 @@ export function HotelSettings() {
                 onChange={(_, d) =>
                   setDraft({ ...draft, description: d.value })
                 }
+                maxLength={600}
                 rows={3}
               />
             </Field>
@@ -1585,28 +1730,58 @@ export function HotelSettings() {
           <Text as="h2" size={500} weight="semibold">
             房型资料
           </Text>
-          {roomsList.map((r) => (
-            <article className="room-edit-row" key={r.id}>
-              <div>
-                <div className="inline">
-                  <Text weight="semibold">{r.name}</Text>
-                  <Badge
-                    appearance="tint"
-                    color={r.enabled ? "success" : "subtle"}
-                  >
-                    {r.enabled ? "启用" : "停用"}
-                  </Badge>
+          {unscheduledEnabledRooms.length > 0 && (
+            <div className="space-top space-bottom">
+              <Notice intent="warning">
+                有 {unscheduledEnabledRooms.length}{" "}
+                个启用房型尚未配置今日及未来排期，顾客端暂无法搜索预订。请点击对应房型的「去排期」。
+              </Notice>
+            </div>
+          )}
+          {roomsList.map((r) => {
+            const needsSchedule =
+              connected && r.enabled && !scheduledRoomIds.has(r.id);
+            return (
+              <article className="room-edit-row" key={r.id}>
+                <div>
+                  <div className="inline">
+                    <Text weight="semibold">{r.name}</Text>
+                    <Badge
+                      appearance="tint"
+                      color={r.enabled ? "success" : "subtle"}
+                    >
+                      {r.enabled ? "启用" : "停用"}
+                    </Badge>
+                    {needsSchedule && (
+                      <Badge appearance="tint" color="warning">
+                        未排期
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="muted space-top">
+                    {r.size} m² · {r.bed} · 每间可住 {r.capacity} 人
+                  </p>
+                  <p className="muted">{r.description}</p>
                 </div>
-                <p className="muted space-top">
-                  {r.size} m² · {r.bed} · 每间可住 {r.capacity} 人
-                </p>
-                <p className="muted">{r.description}</p>
-              </div>
-              <Button onClick={() => openRoomModal({ ...r }, false)}>
-                编辑
-              </Button>
-            </article>
-          ))}
+                <div className="button-row">
+                  <Button
+                    size="small"
+                    appearance={needsSchedule ? "primary" : "subtle"}
+                    onClick={() =>
+                      go(
+                        `/staff/calendar?scheduleRoom=${encodeURIComponent(r.id)}`,
+                      )
+                    }
+                  >
+                    {needsSchedule ? "去排期" : "排期"}
+                  </Button>
+                  <Button onClick={() => openRoomModal({ ...r }, false)}>
+                    编辑
+                  </Button>
+                </div>
+              </article>
+            );
+          })}
           <p className="muted space-top">
             有订单引用的房型保留历史，可停用；逐日价格与房量在日历中维护。
           </p>
@@ -1764,7 +1939,11 @@ export function HotelSettings() {
                 roomType: { name, capacity, size, bed, description, enabled },
               });
               setEditRoom(null);
-              notify("房型资料已保存。");
+              notify(
+                isNewRoom
+                  ? "房型已创建，请前往「房量日历」设置每日房量与价格后方可被顾客搜索预订。"
+                  : "房型资料已保存。",
+              );
             } catch (cause) {
               setRoomError(errorMessage(cause));
             }
@@ -1841,6 +2020,7 @@ export function HotelSettings() {
             <Field label="房型描述" className="span-2">
               <Textarea
                 value={editRoom.description}
+                maxLength={400}
                 onChange={(_, d) =>
                   setEditRoom({ ...editRoom, description: d.value })
                 }
@@ -1867,7 +2047,7 @@ export function HotelSettings() {
 }
 
 export function StatsPage() {
-  const { data, audit, staffHotel, connected, command } = useApp();
+  const { data, audit, notify, staffHotel, connected, command } = useApp();
   const hotelName =
     data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
   const [loaded, setLoaded] = useState(!connected);
@@ -1992,8 +2172,13 @@ export function StatsPage() {
         staffHotel,
         `同一快照 ${snapshot.at}；${snapshot.start} 至 ${snapshot.end}；${snapshot.rows.length} 行，无联系信息`,
       );
+    notify(
+      `已导出 ${shortDate(snapshot.start)} — ${shortDate(snapshot.end)} 统计快照 CSV。`,
+    );
   };
   if (!loaded && !error) return <Spinner label="正在生成统计快照" />;
+  const filtersDirty =
+    start !== snapshot.start || end !== snapshot.end || room !== snapshot.room;
   const metrics = [
     ["总量", snapshot.total],
     ["预占", snapshot.held],
@@ -2077,6 +2262,14 @@ export function StatsPage() {
           : hotelRooms(data, staffHotel).find((r) => r.id === snapshot.room)
               ?.name}
       </p>
+      {filtersDirty && (
+        <div className="space-top">
+          <Notice intent="warning">
+            筛选条件已变更，当前展示和导出的仍是旧快照（{shortDate(snapshot.start)} —{" "}
+            {shortDate(snapshot.end)}，不含）。请点击「生成统计快照」更新后再导出。
+          </Notice>
+        </div>
+      )}
       <section className="summary-band" aria-label="房量与有效金额汇总">
         {metrics.map(([label, value]) => (
           <div key={label}>
@@ -2325,6 +2518,7 @@ function IncidentItem({
           <Field label="联系 / 处理说明" required>
             <Textarea
               value={notes}
+              maxLength={400}
               onChange={(_, d) => setNotes(d.value)}
               placeholder="如实登记联系结果与线下处置情况"
             />
@@ -2358,12 +2552,23 @@ function IncidentItem({
   );
 }
 
-export function IncidentsPage() {
-  const { data, update, audit, notify, role, staffHotel, connected, command } =
-    useApp();
+export function IncidentsPage({ initialId }: { initialId?: string } = {}) {
+  const {
+    data,
+    update,
+    audit,
+    notify,
+    role,
+    staffHotel,
+    connected,
+    command,
+    go,
+  } = useApp();
   const hotelName =
     data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
-  const [selected, setSelected] = useState(data.incidents[0]?.id || ""),
+  const [selected, setSelected] = useState(
+      initialId || data.incidents[0]?.id || "",
+    ),
     [create, setCreate] = useState(false),
     [viewOrder, setViewOrder] = useState("");
   const [title, setTitle] = useState(""),
@@ -2375,11 +2580,50 @@ export function IncidentsPage() {
     [start, setStart] = useState(initialConditions.start),
     [end, setEnd] = useState(initialConditions.end),
     [error, setError] = useState("");
+  const [resumeSales, setResumeSales] = useState(false);
+  const [previewCount, setPreviewCount] = useState<number | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const incidentDateErrors = useRef({ start: "", end: "" });
   const incidents = data.incidents.filter(
       (i) => role === "admin" || i.hotel === staffHotel,
     ),
     incident = incidents.find((i) => i.id === selected) || incidents[0];
+  useEffect(() => {
+    if (initialId) setSelected(initialId);
+  }, [initialId]);
+  useEffect(() => {
+    setResumeSales(false);
+  }, [incident?.id]);
+  useEffect(() => {
+    if (!connected || !create || !hotel) return;
+    if (
+      !isValidIsoDate(start) ||
+      !isValidIsoDate(end) ||
+      end <= start ||
+      start < TODAY ||
+      days(start, end).length > 90
+    ) {
+      setPreviewCount(null);
+      setPreviewLoading(false);
+      return;
+    }
+    let active = true;
+    setPreviewLoading(true);
+    void api
+      .incidentPreview(hotel, room, start, end)
+      .then((res) => {
+        if (active) setPreviewCount(res.count);
+      })
+      .catch(() => {
+        if (active) setPreviewCount(null);
+      })
+      .finally(() => {
+        if (active) setPreviewLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [connected, create, hotel, room, start, end]);
   const current = data.orders.find(
     (o) => o.id === viewOrder && (role === "admin" || o.hotel === staffHotel),
   );
@@ -2403,10 +2647,11 @@ export function IncidentsPage() {
       !reason.trim() ||
       !isValidIsoDate(start) ||
       !isValidIsoDate(end) ||
+      start < TODAY ||
       end <= start ||
       days(start, end).length > 90
     ) {
-      setError("请填写异常标题、原因和有效日期范围（最多 90 个住宿日）。");
+      setError("请填写异常标题、原因和今天起不超过 90 个住宿日的有效日期范围。");
       return;
     }
     if (connected) {
@@ -2551,8 +2796,11 @@ export function IncidentsPage() {
                 <Text as="h2" size={600} weight="semibold">
                   {incident.title}
                 </Text>
-                <Badge appearance="tint" color="warning">
-                  影响范围已停售
+                <Badge
+                  appearance="tint"
+                  color={incident.closed ? "success" : "warning"}
+                >
+                  {incident.closed ? "事件已完成" : "影响范围已停售"}
                 </Badge>
               </div>
               <p className="muted">{incident.reason}</p>
@@ -2591,43 +2839,117 @@ export function IncidentsPage() {
                   影响范围内暂无有效订单。停售记录已保留。
                 </p>
               )}
-              <Button
-                className="space-top"
-                disabled={
-                  incident.closed ||
-                  incident.items.some((i) => i.progress !== "已处理")
-                }
-                onClick={async () => {
-                  if (connected) {
-                    try {
-                      await command({
-                        action: "incident_close",
-                        id: incident.id,
-                      });
-                      notify("事件已完成。恢复销售前请在日历核对房量和停售。");
-                    } catch (cause) {
-                      notify(errorMessage(cause), "error");
-                    }
-                    return;
+              {!incident.closed && (
+                <div className="space-top">
+                  <Checkbox
+                    checked={resumeSales}
+                    disabled={incident.items.some(
+                      (i) => i.progress !== "已处理",
+                    )}
+                    onChange={(_, d) => setResumeSales(Boolean(d.checked))}
+                    label="完成事件时同时解除影响范围的日历停售标记（无其他进行中异常的日期将恢复可售）"
+                  />
+                </div>
+              )}
+              <div className="button-row space-top">
+                <Button
+                  appearance={incident.closed ? "secondary" : "primary"}
+                  disabled={
+                    incident.closed ||
+                    incident.items.some((i) => i.progress !== "已处理")
                   }
-                  update((current) => ({
-                    ...current,
-                    incidents: current.incidents.map((i) =>
-                      i.id === incident.id ? { ...i, closed: true } : i,
-                    ),
-                  }));
-                  audit(
-                    "完成异常事件",
-                    incident.id,
-                    "全部关联订单已登记处置结果；停售标记保留",
-                  );
-                  notify(
-                    "事件已完成。恢复销售前请核对营业与房量条件，并在日历中调整停售。",
-                  );
-                }}
-              >
-                {incident.closed ? "事件已完成" : "全部处理后完成事件"}
-              </Button>
+                  onClick={async () => {
+                    const closeMessage = resumeSales
+                      ? "事件已完成，已解除影响范围的停售标记（无其他未完成异常的日期已恢复可售）。"
+                      : role === "admin"
+                        ? "事件已完成。受影响日期仍保持停售状态，需由所属酒店工作人员在房量日历核对房量后恢复销售。"
+                        : "事件已完成。受影响日期仍保持停售状态，请前往房量日历核对房量后再恢复销售。";
+                    if (connected) {
+                      try {
+                        await command({
+                          action: "incident_close",
+                          id: incident.id,
+                          mode: resumeSales ? "resume" : undefined,
+                        });
+                        notify(closeMessage);
+                      } catch (cause) {
+                        notify(errorMessage(cause), "error");
+                      }
+                      return;
+                    }
+                    update((current) => {
+                      const nextIncidents = current.incidents.map((i) =>
+                        i.id === incident.id ? { ...i, closed: true } : i,
+                      );
+                      let nextCalendar = current.calendar;
+                      if (resumeSales) {
+                        nextCalendar = { ...current.calendar };
+                        const targetRooms = incident.room
+                          ? [incident.room]
+                          : hotelRooms(current, incident.hotel).map((r) => r.id);
+                        for (const roomId of targetRooms) {
+                          for (const date of days(
+                            incident.start,
+                            incident.end,
+                          )) {
+                            if (date < TODAY) continue;
+                            const blockedByOther = nextIncidents.some(
+                              (other) =>
+                                !other.closed &&
+                                other.hotel === incident.hotel &&
+                                (!other.room || other.room === roomId) &&
+                                other.start <= date &&
+                                date < other.end,
+                            );
+                            if (blockedByOther) continue;
+                            const prior = calendarEntry(
+                              current,
+                              incident.hotel,
+                              roomId,
+                              date,
+                            );
+                            if (prior.stopped) {
+                              nextCalendar[
+                                entryKey(incident.hotel, roomId, date)
+                              ] = {
+                                ...prior,
+                                stopped: false,
+                                version: prior.version + 1,
+                              };
+                            }
+                          }
+                        }
+                      }
+                      return {
+                        ...current,
+                        calendar: nextCalendar,
+                        incidents: nextIncidents,
+                      };
+                    });
+                    audit(
+                      "完成异常事件",
+                      incident.id,
+                      resumeSales
+                        ? "全部关联订单已登记处置结果；已解除影响范围停售标记"
+                        : "全部关联订单已登记处置结果；停售标记保留",
+                    );
+                    notify(closeMessage);
+                  }}
+                >
+                  {incident.closed ? "事件已完成" : "全部处理后完成事件"}
+                </Button>
+                {role === "staff" && (
+                  <Button
+                    onClick={() =>
+                      go(
+                        `/staff/calendar?date=${encodeURIComponent(incident.start)}`,
+                      )
+                    }
+                  >
+                    前往房量日历核对
+                  </Button>
+                )}
+              </div>
             </section>
           )}
         </div>
@@ -2648,7 +2970,11 @@ export function IncidentsPage() {
             <Input value={title} onChange={(_, d) => setTitle(d.value)} />
           </Field>
           <Field label="异常原因" className="span-2">
-            <Textarea value={reason} onChange={(_, d) => setReason(d.value)} />
+            <Textarea
+              value={reason}
+              maxLength={400}
+              onChange={(_, d) => setReason(d.value)}
+            />
           </Field>
           {role === "admin" && (
             <Field label="酒店" className="span-2">
@@ -2680,6 +3006,7 @@ export function IncidentsPage() {
           <Field label="影响住宿日起">
             <FluentDatePicker
               value={start}
+              minDate={TODAY}
               rangeStart={isValidIsoDate(start) ? start : undefined}
               rangeEnd={isValidIsoDate(end) ? end : undefined}
               onValidityChange={(msg) => {
@@ -2713,8 +3040,13 @@ export function IncidentsPage() {
           </Field>
         </div>
         <p className="muted space-top">
-          当前影响 {affected.length}{" "}
-          笔有效订单。登记后先停售，尚未处理的旧订单保留原状态。
+          {connected
+            ? previewLoading
+              ? "正在统计影响范围内的有效订单数…"
+              : previewCount !== null
+                ? `当前影响 ${previewCount} 笔有效订单。登记后先停售，尚未处理的旧订单保留原状态。`
+                : "请选择今天起不超过 90 个住宿日的范围，登记后先停售影响范围。"
+            : `当前影响 ${affected.length} 笔有效订单。登记后先停售，尚未处理的旧订单保留原状态。`}
         </p>
         {error && <Notice intent="error">{error}</Notice>}
       </ConfirmDialog>
@@ -2729,12 +3061,17 @@ export function IncidentsPage() {
 }
 
 export function AuditPage() {
-  const { data, role, staffHotel, connected } = useApp();
+  const { data, role, staffHotel, connected, go } = useApp();
   const hotelName =
     data.hotels.find((h) => h.id === staffHotel)?.name || "酒店";
   const [object, setObject] = useState(""),
     [action, setAction] = useState("all"),
-    [actor, setActor] = useState("all");
+    [actor, setActor] = useState("all"),
+    [viewOrder, setViewOrder] = useState(""),
+    [page, setPage] = useState(0);
+  useEffect(() => {
+    setPage(0);
+  }, [object, action, actor]);
   const ownObject = (id: string) =>
     id === staffHotel ||
     id.startsWith(`${staffHotel}/`) ||
@@ -2747,7 +3084,51 @@ export function AuditPage() {
       (action === "all" || log.action === action) &&
       (actor === "all" || log.role === actor),
   );
+  const pageSize = 50;
+  const pages = Math.max(1, Math.ceil(logs.length / pageSize));
+  const safePage = Math.min(page, pages - 1);
+  const visibleLogs = logs.slice(
+    safePage * pageSize,
+    safePage * pageSize + pageSize,
+  );
   const hasAuditFilters = object !== "" || action !== "all" || actor !== "all";
+  const matchedOrder = data.orders.find((o) => o.id === viewOrder);
+  const resolveTarget = (log: (typeof logs)[number]) => {
+    if (data.orders.some((o) => o.id === log.object)) {
+      return {
+        label: "查看关联订单详情",
+        onClick: () => setViewOrder(log.object),
+      };
+    }
+    if (data.incidents.some((i) => i.id === log.object)) {
+      return {
+        label: "前往对应异常事件",
+        onClick: () =>
+          go(`/${role}/incidents?id=${encodeURIComponent(log.object)}`),
+      };
+    }
+    if (role === "staff" && log.object.startsWith(`${staffHotel}/`)) {
+      return {
+        label: log.action.includes("日历") ? "前往房量日历" : "前往酒店与房型",
+        onClick: () =>
+          go(log.action.includes("日历") ? "/staff/calendar" : "/staff/hotel"),
+      };
+    }
+    if (data.hotels.some((h) => h.id === log.object)) {
+      return {
+        label: "前往酒店资料",
+        onClick: () =>
+          go(role === "staff" ? "/staff/hotel" : "/admin/hotels"),
+      };
+    }
+    if (role === "admin" && data.accounts.some((a) => a.id === log.object)) {
+      return {
+        label: "前往账户与权限",
+        onClick: () => go("/admin/accounts"),
+      };
+    }
+    return null;
+  };
   return (
     <>
       <Heading
@@ -2794,32 +3175,77 @@ export function AuditPage() {
           </Button>
         )}
       </div>
-      {logs.length ? (
-        <section aria-label="审计记录">
-          {logs.map((log) => (
-            <article className="audit-entry" key={log.id}>
-              <time className="muted">{formatDisplayTime(log.at)}</time>
-              <div>
-                <Text weight="semibold">{log.action}</Text>
-                <p>{log.detail}</p>
-                <Text size={200} className="muted">
-                  {log.object} · {log.role} · {log.id}
-                </Text>
-              </div>
-              <Badge
-                appearance="tint"
-                color={log.result === "成功" ? "success" : "warning"}
+      {connected && data.audit.length >= 1000 && (
+        <p className="muted space-bottom">当前已载入最新 1000 条审计记录。</p>
+      )}
+      {visibleLogs.length ? (
+        <>
+          <section aria-label="审计记录">
+            {visibleLogs.map((log) => {
+              const target = resolveTarget(log);
+              return (
+                <article className="audit-entry" key={log.id}>
+                  <time className="muted">{formatDisplayTime(log.at)}</time>
+                  <div>
+                    <Text weight="semibold">{log.action}</Text>
+                    <p>{log.detail}</p>
+                    <Text size={200} className="muted">
+                      {target ? (
+                        <Button
+                          appearance="transparent"
+                          size="small"
+                          className="audit-object-link"
+                          title={target.label}
+                          onClick={target.onClick}
+                        >
+                          {log.object}
+                        </Button>
+                      ) : (
+                        log.object
+                      )}{" "}
+                      · {log.role} · {log.id}
+                    </Text>
+                  </div>
+                  <Badge
+                    appearance="tint"
+                    color={log.result === "成功" ? "success" : "warning"}
+                  >
+                    {log.result}
+                  </Badge>
+                </article>
+              );
+            })}
+          </section>
+          {logs.length > pageSize && (
+            <div className="button-row space-top">
+              <Button
+                disabled={safePage === 0}
+                onClick={() => setPage(safePage - 1)}
               >
-                {log.result}
-              </Badge>
-            </article>
-          ))}
-        </section>
+                上一页
+              </Button>
+              <Text>
+                第 {safePage + 1} / {pages} 页（共 {logs.length} 条）
+              </Text>
+              <Button
+                disabled={safePage + 1 >= pages}
+                onClick={() => setPage(safePage + 1)}
+              >
+                下一页
+              </Button>
+            </div>
+          )}
+        </>
       ) : (
         <Empty title="没有匹配的操作记录">
           请调整对象编号、动作或操作者条件。
         </Empty>
       )}
+      <OrderDrawer
+        order={matchedOrder}
+        onClose={() => setViewOrder("")}
+        readOnly
+      />
     </>
   );
 }
@@ -2835,6 +3261,7 @@ export function AdminHotels() {
       address: "",
       phone: "",
       caption: "",
+      description: "",
     }),
     [error, setError] = useState("");
   const resetDraft = () =>
@@ -2845,6 +3272,7 @@ export function AdminHotels() {
       address: "",
       phone: "",
       caption: "",
+      description: "",
     });
   const save = async () => {
     if (
@@ -2860,7 +3288,9 @@ export function AdminHotels() {
         await command({ action: "hotel", property: draft });
         setCreate(false);
         resetDraft();
-        notify("酒店已创建，可为工作人员绑定所属酒店。");
+        notify(
+          "酒店已创建，请前往「账户与权限」分配工作人员账号以完善相册、房型与排期。",
+        );
       } catch (cause) {
         setError(errorMessage(cause));
       }
@@ -2881,7 +3311,7 @@ export function AdminHotels() {
           caption: draft.caption.trim(),
           image: "",
           photos: [],
-          description: "",
+          description: draft.description.trim(),
           offset: 0,
           enabled: true,
         },
@@ -2890,7 +3320,9 @@ export function AdminHotels() {
     audit("创建酒店", id, "创建酒店资料并启用");
     setCreate(false);
     resetDraft();
-    notify("酒店已创建，可为工作人员绑定所属酒店。");
+    notify(
+      "酒店已创建，请前往「账户与权限」分配工作人员账号以完善相册、房型与排期。",
+    );
   };
   return (
     <>
@@ -3036,6 +3468,15 @@ export function AdminHotels() {
               onChange={(_, d) => setDraft({ ...draft, caption: d.value })}
             />
           </Field>
+          <Field label="酒店简介（选填）" className="span-2">
+            <Textarea
+              value={draft.description}
+              placeholder="例如：木色、晨光与一方安静的庭院"
+              maxLength={600}
+              rows={2}
+              onChange={(_, d) => setDraft({ ...draft, description: d.value })}
+            />
+          </Field>
         </div>
         {error && (
           <div className="space-top">
@@ -3152,10 +3593,22 @@ export function AdminAccounts() {
             return;
           }
           if (connected) {
+            const cleanUser = username.trim().toLowerCase();
+            if (!USERNAME_PATTERN.test(cleanUser)) {
+              setError(
+                "登录账户名须为 3 至 64 位小写字母、数字或 ._-，且以字母或数字开头。",
+              );
+              return;
+            }
+            const pwBytes = utf8ByteLength(password);
+            if (pwBytes < 10 || pwBytes > 256) {
+              setError("初始密码长度须为 10 至 256 字节。");
+              return;
+            }
             try {
               await command({
                 action: "staff_create",
-                user: { username, password, label: name, hotel },
+                user: { username: cleanUser, password, label: name, hotel },
               });
               setCreate(false);
               setUsername("");
@@ -3197,14 +3650,22 @@ export function AdminAccounts() {
           </Field>
           {connected && (
             <>
-              <Field label="登录账户名" required>
+              <Field
+                label="登录账户名"
+                required
+                hint="3–64 位小写字母、数字或 ._-，需以字母或数字开头"
+              >
                 <Input
                   value={username}
                   autoComplete="off"
                   onChange={(_, d) => setUsername(d.value)}
                 />
               </Field>
-              <Field label="初始密码" required>
+              <Field
+                label="初始密码"
+                required
+                hint="至少 10 位字符（10–256 字节）"
+              >
                 <Input
                   type="password"
                   value={password}

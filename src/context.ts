@@ -17,7 +17,7 @@ export type AppState = {
   identity: Identity | null;
   connected: boolean;
   staffHotel: string;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<DemoData | null>;
   command: (command: Command) => Promise<CommandResult>;
   signOut: () => void;
   go: (path: string) => void;

@@ -239,6 +239,7 @@ type command struct {
 type result struct {
 	ID      string      `json:"id,omitempty"`
 	Order   *order      `json:"order,omitempty"`
+	Name    string      `json:"name,omitempty"`
 	Phone   string      `json:"phone,omitempty"`
 	Photo   *hotelPhoto `json:"photo,omitempty"`
 	Problem *problem    `json:"problem,omitempty"`
@@ -293,6 +294,18 @@ func validateSale(s stay, now time.Time) error {
 func cleanText(s string, limit int) string {
 	s = strings.TrimSpace(s)
 	if utf8.RuneCountInString(s) > limit || strings.ContainsFunc(s, unicode.IsControl) {
+		return ""
+	}
+	return s
+}
+
+func cleanMultilineText(s string, limit int) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) > limit || strings.ContainsFunc(s, func(r rune) bool {
+		return unicode.IsControl(r) && r != '\n' && r != '\t'
+	}) {
 		return ""
 	}
 	return s
