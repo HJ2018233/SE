@@ -49,6 +49,23 @@ function normalizeDateDraft(raw: string): string {
   return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
 }
 
+function normalizeStrictIsoDraft(raw: string): string | null {
+  const ascii = normalizeDigits(raw).trim();
+  if (!ascii) return null;
+  const cleaned = ascii.replace(/[/／.－—\s]+/g, "-");
+  return /^\d{4}-\d{2}-\d{2}$/.test(cleaned) ? cleaned : null;
+}
+
+function validateDateBounds(
+  iso: string,
+  minDate?: string,
+  maxDate?: string,
+): string {
+  if (minDate && iso < minDate) return `日期不能早于 ${minDate}。`;
+  if (maxDate && iso > maxDate) return `日期不能晚于 ${maxDate}。`;
+  return "";
+}
+
 function initialMonth(value: string, minDate?: string): { year: number; month: number } {
   const target =
     parseIsoDate(value) ||
@@ -106,15 +123,20 @@ export function FluentDatePicker({
       onChange("");
       return;
     }
-    const normalized = normalizeDateDraft(trimmed);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
-      if (!isValidIsoDate(normalized)) {
+    const strict = normalizeStrictIsoDraft(trimmed);
+    if (strict) {
+      if (!isValidIsoDate(strict)) {
         setValidationError("该公历日期不存在，请核对月份天数或平闰年。");
         return;
       }
+      const boundError = validateDateBounds(strict, minDate, maxDate);
+      if (boundError) {
+        setValidationError(boundError);
+        return;
+      }
       setValidationError("");
-      onChange(normalized);
-      const parsed = parseIsoDate(normalized);
+      onChange(strict);
+      const parsed = parseIsoDate(strict);
       if (parsed) setView({ year: parsed.year, month: parsed.month });
     } else if (localError) {
       setValidationError("");
@@ -135,6 +157,11 @@ export function FluentDatePicker({
     }
     if (!isValidIsoDate(normalized)) {
       setValidationError("该公历日期不存在，请核对月份天数或平闰年。");
+      return;
+    }
+    const boundError = validateDateBounds(normalized, minDate, maxDate);
+    if (boundError) {
+      setValidationError(boundError);
       return;
     }
     if (normalized !== text) setText(normalized);
@@ -181,7 +208,7 @@ export function FluentDatePicker({
     setValidationError("");
     onChange(iso);
     setOpen(false);
-    requestAnimationFrame(() => triggerRef.current?.focus());
+    requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
   };
 
   const todayValid =
@@ -193,6 +220,7 @@ export function FluentDatePicker({
         <Input
           type="text"
           inputMode="numeric"
+          input={{ autoCapitalize: "none", autoCorrect: "off", spellCheck: false }}
           value={text}
           placeholder={placeholder}
           disabled={disabled}
@@ -291,7 +319,9 @@ export function FluentDatePicker({
               e.preventDefault();
               e.stopPropagation();
               setOpen(false);
-              requestAnimationFrame(() => triggerRef.current?.focus());
+              requestAnimationFrame(() =>
+                triggerRef.current?.focus({ preventScroll: true }),
+              );
             }
           }}
         >
@@ -337,6 +367,8 @@ export function FluentDatePicker({
                 Boolean(rangeStart && rangeEnd && rangeEnd > rangeStart) &&
                 cell.iso > rangeStart! &&
                 cell.iso < rangeEnd!;
+              const showSelected = !isDisabled && (isSelected || isEndpoint);
+              const showInRange = !isDisabled && inRange;
               const isToday = cell.iso === TODAY;
               return (
                 <button
@@ -344,11 +376,11 @@ export function FluentDatePicker({
                   type="button"
                   disabled={isDisabled}
                   aria-label={`${view.year}年${view.month}月${cell.day}日`}
-                  aria-pressed={isSelected || isEndpoint}
+                  aria-pressed={showSelected}
                   className={[
                     "date-cal-day",
-                    isSelected || isEndpoint ? "selected" : "",
-                    inRange ? "in-range" : "",
+                    showSelected ? "selected" : "",
+                    showInRange ? "in-range" : "",
                     isToday ? "today" : "",
                   ]
                     .filter(Boolean)

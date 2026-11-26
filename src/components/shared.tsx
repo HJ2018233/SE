@@ -54,7 +54,7 @@ function FocusReturnSurface({
       mounted.current = false;
       requestAnimationFrame(() => {
         if (!mounted.current && target.current?.isConnected)
-          target.current.focus();
+          target.current.focus({ preventScroll: true });
       });
     };
   }, []);
@@ -510,16 +510,31 @@ export function ConditionsDialog({
   value,
   onApply,
   filters = false,
+  showCity = true,
+  submitLabel,
+  description,
 }: {
   open: boolean;
   onClose: () => void;
   value: Conditions;
   onApply: (c: Conditions) => void;
   filters?: boolean;
+  showCity?: boolean;
+  submitLabel?: string;
+  description?: string;
 }) {
   const [draft, setDraft] = useState(value);
   const [error, setError] = useState("");
   const [dateError, setDateError] = useState("");
+  const dateErrorRef = useRef("");
+  useEffect(() => {
+    if (open) {
+      setDraft(value);
+      setError("");
+      setDateError("");
+      dateErrorRef.current = "";
+    }
+  }, [open, value]);
   return (
     <Dialog
       open={open}
@@ -535,7 +550,10 @@ export function ConditionsDialog({
             </DialogTitle>
             <DialogContent>
               <p className="muted">
-                选择目的地与住宿时间，查找整段可订的房型。
+                {description ||
+                  (showCity
+                    ? "选择目的地与住宿时间，查找整段可订的房型。"
+                    : "调整入住日期、人数与房间数，实时更新当前酒店的房态与逐晚报价。")}
               </p>
               <ConditionFields
                 value={draft}
@@ -544,10 +562,12 @@ export function ConditionsDialog({
                   if (error) setError("");
                 }}
                 onDateErrorChange={(msg) => {
+                  dateErrorRef.current = msg;
                   setDateError(msg);
                   if (!msg && error) setError("");
                 }}
                 filters={filters}
+                showCity={showCity}
               />
               {error && (
                 <div className="space-top">
@@ -560,11 +580,16 @@ export function ConditionsDialog({
               <Button
                 appearance="primary"
                 onClick={() => {
-                  if (dateError) {
-                    setError(dateError);
+                  const latestDateError = dateErrorRef.current || dateError;
+                  if (latestDateError) {
+                    setError(latestDateError);
                     return;
                   }
-                  const message = validConditions(draft);
+                  const message = validConditions(
+                    showCity
+                      ? draft
+                      : { ...draft, city: draft.city.trim() || "当前酒店" },
+                  );
                   if (message) {
                     setError(message);
                     return;
@@ -573,7 +598,7 @@ export function ConditionsDialog({
                   onClose();
                 }}
               >
-                查找酒店
+                {submitLabel || (showCity ? "查找酒店" : "更新条件")}
               </Button>
             </DialogActions>
           </DialogBody>

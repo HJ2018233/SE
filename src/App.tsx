@@ -154,8 +154,16 @@ export function App() {
     role === "customer"
       ? path.startsWith("/order") || path.startsWith("/modify")
         ? "/orders"
-        : "/explore"
+        : path === "/" ||
+            path === "/explore" ||
+            path.startsWith("/hotel/") ||
+            path.startsWith("/book/")
+          ? "/explore"
+          : ""
       : path;
+  const loginQuery = path.startsWith("/hotel/")
+    ? `?returnTo=${encodeURIComponent(path)}`
+    : "";
   useEffect(() => {
     const onHash = () => {
       setRawHash(window.location.hash.slice(1) || "/explore");
@@ -525,98 +533,106 @@ export function App() {
               </TabList>
             </nav>
             <div className="header-account">
-              <Menu>
-                <MenuTrigger disableButtonEnhancement>
+              {!prototype && role === "customer" && !signedIn ? (
+                <>
                   <Button
                     appearance="subtle"
-                    aria-label={`${role === "staff" ? "酒店工作台" : role === "admin" ? "平台管理" : signedIn ? "我的账户" : "访客"}，打开账户菜单${prototype ? "与原型视图" : ""}`}
-                    icon={
-                      signedIn ? (
-                        <Avatar
-                          name={
-                            role === "staff"
-                              ? "酒店"
-                              : role === "admin"
-                                ? "管理"
-                                : "顾客"
-                          }
-                          size={28}
-                        />
-                      ) : (
-                        <Person24Regular />
-                      )
-                    }
+                    onClick={() => go(`/register${loginQuery}`)}
                   >
-                    <span className="account-label">
-                      {role === "staff"
-                        ? (data.hotels.find((h) => h.id === staffHotel)?.name ||
-                            "酒店") + " · 工作台"
-                        : role === "admin"
-                          ? "平台管理"
-                          : signedIn
-                            ? "我的账户"
-                            : "访客"}
-                    </span>
-                    <ChevronDown16Regular />
+                    注册
                   </Button>
-                </MenuTrigger>
-                <MenuPopover>
-                  <MenuList>
-                    {role === "customer" && (
-                      <MenuItem
-                        onClick={() =>
-                          go(
-                            signedIn
-                              ? "/account"
-                              : path.startsWith("/hotel/")
-                                ? `/login?returnTo=${encodeURIComponent(path)}`
-                                : "/login",
+                  <Button
+                    appearance="primary"
+                    onClick={() => go(`/login${loginQuery}`)}
+                    className="header-login"
+                  >
+                    登录
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Menu>
+                    <MenuTrigger disableButtonEnhancement>
+                      <Button
+                        appearance="subtle"
+                        aria-label={`${role === "staff" ? "酒店工作台" : role === "admin" ? "平台管理" : signedIn ? "我的账户" : "访客"}，打开账户菜单${prototype ? "与原型视图" : ""}`}
+                        icon={
+                          signedIn ? (
+                            <Avatar
+                              name={
+                                role === "staff"
+                                  ? "酒店"
+                                  : role === "admin"
+                                    ? "管理"
+                                    : "顾客"
+                              }
+                              size={28}
+                            />
+                          ) : (
+                            <Person24Regular />
                           )
                         }
                       >
-                        {signedIn ? "个人中心" : "登录 / 注册"}
-                      </MenuItem>
-                    )}
-                    {prototype && (
-                      <>
-                        <MenuDivider />
-                        <MenuItem onClick={() => switchRole("customer")}>
-                          顾客视图（原型演示）
-                        </MenuItem>
-                        <MenuItem onClick={() => switchRole("staff")}>
-                          酒店工作人员视图（原型演示）
-                        </MenuItem>
-                        <MenuItem onClick={() => switchRole("admin")}>
-                          平台管理员视图（原型演示）
-                        </MenuItem>
-                        <MenuDivider />
-                        <MenuItem onClick={() => setToolsOpen(true)}>
-                          原型场景
-                        </MenuItem>
-                      </>
-                    )}
-                    {signedIn && (
-                      <MenuItem onClick={signOut}>
-                        {prototype ? "退出演示账户" : "退出登录"}
-                      </MenuItem>
-                    )}
-                  </MenuList>
-                </MenuPopover>
-              </Menu>
-              {role === "customer" && !signedIn && (
-                <Button
-                  appearance="primary"
-                  onClick={() =>
-                    go(
-                      path.startsWith("/hotel/")
-                        ? `/login?returnTo=${encodeURIComponent(path)}`
-                        : "/login",
-                    )
-                  }
-                  className="header-login"
-                >
-                  登录
-                </Button>
+                        <span className="account-label">
+                          {role === "staff"
+                            ? (data.hotels.find((h) => h.id === staffHotel)?.name ||
+                                "酒店") + " · 工作台"
+                            : role === "admin"
+                              ? "平台管理"
+                              : signedIn
+                                ? "我的账户"
+                                : "访客"}
+                        </span>
+                        <ChevronDown16Regular />
+                      </Button>
+                    </MenuTrigger>
+                    <MenuPopover>
+                      <MenuList>
+                        {role === "customer" && (
+                          <MenuItem
+                            onClick={() =>
+                              go(signedIn ? "/account" : `/login${loginQuery}`)
+                            }
+                          >
+                            {signedIn ? "个人中心" : "登录 / 注册"}
+                          </MenuItem>
+                        )}
+                        {prototype && (
+                          <>
+                            <MenuDivider />
+                            <MenuItem onClick={() => switchRole("customer")}>
+                              顾客视图（原型演示）
+                            </MenuItem>
+                            <MenuItem onClick={() => switchRole("staff")}>
+                              酒店工作人员视图（原型演示）
+                            </MenuItem>
+                            <MenuItem onClick={() => switchRole("admin")}>
+                              平台管理员视图（原型演示）
+                            </MenuItem>
+                            <MenuDivider />
+                            <MenuItem onClick={() => setToolsOpen(true)}>
+                              原型场景
+                            </MenuItem>
+                          </>
+                        )}
+                        {signedIn && (
+                          <MenuItem onClick={signOut}>
+                            {prototype ? "退出演示账户" : "退出登录"}
+                          </MenuItem>
+                        )}
+                      </MenuList>
+                    </MenuPopover>
+                  </Menu>
+                  {role === "customer" && !signedIn && (
+                    <Button
+                      appearance="primary"
+                      onClick={() => go(`/login${loginQuery}`)}
+                      className="header-login"
+                    >
+                      登录
+                    </Button>
+                  )}
+                </>
               )}
             </div>
           </div>

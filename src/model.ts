@@ -210,7 +210,9 @@ export function dateTime(value = Date.now()) {
 }
 export function formatDisplayTime(value: string) {
   if (!value || !/^\d{4}-\d{2}-\d{2}/.test(value)) return value;
-  const normalized = value.replace(/([+-]\d{2})$/, "$1:00");
+  const normalized = value
+    .replace(/^(\d{4}-\d{2}-\d{2})\s+/, "$1T")
+    .replace(/([+-]\d{2})$/, "$1:00");
   const ms = Date.parse(normalized);
   if (!Number.isFinite(ms)) return value;
   return new Intl.DateTimeFormat("sv-SE", {
@@ -778,8 +780,10 @@ export function roomUnavailableReason(
     if (incidentBlocked(data, hotelId, resolved.id, date)) {
       return "所选日期异常停售";
     }
+    const key = entryKey(hotelId, resolved.id, date);
+    const hasEntry = Object.prototype.hasOwnProperty.call(data.calendar, key);
     const entry = calendarEntry(data, hotelId, resolved.id, date);
-    if ((data.connected && entry.version === 0) || entry.price <= 0) {
+    if ((data.connected && !hasEntry) || entry.price <= 0) {
       return "所选日期暂未排期";
     }
     if (entry.stopped) {

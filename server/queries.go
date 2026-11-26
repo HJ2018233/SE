@@ -209,9 +209,9 @@ func incidentList(ctx context.Context, tx pgx.Tx, a account) ([]incident, error)
 
 func auditList(ctx context.Context, tx pgx.Tx, a account) ([]auditEntry, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id::text,happened_at,role,action,object,detail,result FROM audit
+		SELECT audit.id::text,happened_at,role,action,object,detail,result FROM audit
 		WHERE $1='admin' OR ($1='staff' AND hotel_id=$2)
-		ORDER BY id DESC LIMIT 1000`, a.Role, a.Hotel)
+		ORDER BY audit.id DESC LIMIT 1000`, a.Role, a.Hotel)
 	if err != nil {
 		return nil, err
 	}

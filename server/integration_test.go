@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -334,6 +335,23 @@ func TestPostgresBookingLifecycle(t *testing.T) {
 	afterCloseView := expectAPI[snapshot](t, callAPI(handler, "GET", "/api/state", front, nil), 200)
 	if afterCloseView.Calendar["qt/"+lateStay.Room+"/"+lateStay.Start].Stopped {
 		t.Fatal("incident_close with resume mode did not clear stopped flag")
+	}
+	adminView := expectAPI[snapshot](t, callAPI(handler, "GET", "/api/state", adminToken, nil), 200)
+	for label, logs := range map[string][]auditEntry{"admin": adminView.Audit, "staff": afterCloseView.Audit} {
+		if len(logs) < 12 {
+			t.Fatalf("%s audit count = %d, want >= 12 to verify numeric ordering past 10", label, len(logs))
+		}
+		var prev int64
+		for i, entry := range logs {
+			id, err := strconv.ParseInt(entry.ID, 10, 64)
+			if err != nil {
+				t.Fatalf("%s invalid audit id %q: %v", label, entry.ID, err)
+			}
+			if i > 0 && id >= prev {
+				t.Fatalf("%s audit not sorted numerically descending at index %d: prev=%d, curr=%d", label, i, prev, id)
+			}
+			prev = id
+		}
 	}
 
 	setClock(time.UnixMilli(finished.Order.TerminalAt).Add(7 * 24 * time.Hour))

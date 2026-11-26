@@ -4,6 +4,7 @@
 html {
   color-scheme: light;
   scroll-behavior: smooth;
+  scroll-padding-top: 84px;
   overscroll-behavior-y: none;
 }
 body {

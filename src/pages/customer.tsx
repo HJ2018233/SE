@@ -44,6 +44,7 @@ import {
   available,
   dateTime,
   days,
+  formatDisplayTime,
   initialConditions,
   isValidIsoDate,
   money,
@@ -55,6 +56,7 @@ import {
   roomUnavailableReason,
   shortDate,
   statuses,
+  TODAY,
   total,
   USERNAME_PATTERN,
   utf8ByteLength,
@@ -155,6 +157,9 @@ export function Explore() {
     );
   const featured = hotels[0],
     featuredOffer = featured ? bestOffer(featured) : undefined,
+    featuredMinNightPrice = featuredOffer
+      ? Math.min(...featuredOffer.nights.map((n) => n.price))
+      : 0,
     count = days(conditions.start, conditions.end).length;
   const activeFilterCount =
     (conditions.type !== "all" ? 1 : 0) +
@@ -306,7 +311,7 @@ export function Explore() {
                     <p className="muted">{featured.caption}</p>
                   )}
                   <div className="ticket-price">
-                    <Price value={featuredOffer!.nights[0].price} />
+                    <Price value={featuredMinNightPrice} />
                     <span className="muted">起 / 每晚单间</span>
                     <span className="muted">
                       {count} 晚 {conditions.rooms} 间合计{" "}
@@ -431,7 +436,6 @@ export function Explore() {
         </>
       )}
       <ConditionsDialog
-        key={`edit-${edit}`}
         open={edit}
         onClose={() => setEdit(false)}
         value={conditions}
@@ -454,7 +458,6 @@ export function Explore() {
         </div>
       )}
       <ConditionsDialog
-        key={`filter-${filter}`}
         open={filter}
         onClose={() => setFilter(false)}
         value={conditions}
@@ -592,6 +595,11 @@ export function HotelPage({ id }: { id: string }) {
               const price = quote(data, id, r.id, conditions);
               const hasPrices =
                 price.length > 0 && price.every((n) => n.price > 0);
+              const minNightPrice = hasPrices
+                ? Math.min(...price.map((n) => n.price))
+                : 0;
+              const hasVariedPrices =
+                hasPrices && price.some((n) => n.price !== minNightPrice);
               return (
                 <div
                   className={`room-option ${room.id === r.id ? "selected" : ""} ${!isBookable ? "unavailable" : ""}`}
@@ -615,8 +623,9 @@ export function HotelPage({ id }: { id: string }) {
                   <div className="room-price">
                     {isBookable && hasPrices ? (
                       <>
-                        <Price value={price[0].price} />
+                        <Price value={minNightPrice} />
                         <Text className="muted" size={200}>
+                          {hasVariedPrices ? "起 / 晚 · " : ""}
                           {price.length} 晚合计{" "}
                           {money(total(price, conditions.rooms))}
                         </Text>
@@ -699,11 +708,11 @@ export function HotelPage({ id }: { id: string }) {
         </aside>
       </div>
       <ConditionsDialog
-        key={String(edit)}
         open={edit}
         onClose={() => setEdit(false)}
         value={conditions}
         onApply={setConditions}
+        showCity={false}
       />
       <div className="mobile-booking-bar">
         <div>
@@ -1316,11 +1325,12 @@ export function Orders() {
     setStart("");
     setEnd("");
   };
-  const filterFields = (
+  const renderFilterFields = (includeStatus: boolean) => (
     <>
       <Field label="查找订单编号">
         <Input
           value={search}
+          input={{ autoCapitalize: "none", autoCorrect: "off", spellCheck: false }}
           onChange={(_, d) => setSearch(d.value)}
           placeholder="输入订单编号"
         />
@@ -1335,14 +1345,16 @@ export function Orders() {
           ))}
         </Select>
       </Field>
-      <Field label="订单状态">
-        <Select value={state} onChange={(_, d) => setState(d.value)}>
-          <option value="all">全部状态</option>
-          {statuses.map((s) => (
-            <option key={s}>{s}</option>
-          ))}
-        </Select>
-      </Field>
+      {includeStatus && (
+        <Field label="订单状态">
+          <Select value={state} onChange={(_, d) => setState(d.value)}>
+            <option value="all">全部状态</option>
+            {statuses.map((s) => (
+              <option key={s}>{s}</option>
+            ))}
+          </Select>
+        </Field>
+      )}
       <Field label="入住日起">
         <FluentDatePicker
           clearable
@@ -1378,14 +1390,7 @@ export function Orders() {
       </Heading>
       <div className="quick-filter-bar" role="group" aria-label="快捷状态筛选">
         {(
-          [
-            ["all", "全部订单"],
-            ["待确认", "待确认"],
-            ["已确认", "已确认"],
-            ["已入住", "已入住"],
-            ["已退房", "已退房"],
-            ["已取消", "已取消"],
-          ] as const
+          [["all", "全部订单"], ...statuses.map((s) => [s, s] as const)] as const
         ).map(([val, label]) => (
           <Button
             key={val}
@@ -1428,7 +1433,7 @@ export function Orders() {
         </div>
       </div>
       <div className="filter-bar orders-filter-bar">
-        {filterFields}
+        {renderFilterFields(false)}
         {hasFilters && (
           <Button appearance="subtle" onClick={resetFilters}>
             重置筛选
@@ -1455,7 +1460,7 @@ export function Orders() {
             筛选我的订单
           </DrawerHeaderTitle>
         </DrawerHeader>
-        <DrawerBody className="stack">{filterFields}</DrawerBody>
+        <DrawerBody className="stack">{renderFilterFields(true)}</DrawerBody>
         <DrawerFooter className="mobile-filter-drawer-actions">
           {hasFilters && (
             <Button onClick={resetFilters}>重置筛选</Button>
@@ -1705,7 +1710,7 @@ export function OrderDetail({ id }: { id: string }) {
             <ol className="timeline">
               {[...order.history].reverse().map((event, i) => (
                 <li key={i}>
-                  <time>{event.time}</time>
+                  <time>{formatDisplayTime(event.time)}</time>
                   <p>{event.text}</p>
                 </li>
               ))}
@@ -1924,6 +1929,12 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
     draft.end !== order.end ||
     draft.rooms !== order.rooms ||
     roomId !== order.room;
+  const hasChanges =
+    reprice ||
+    draft.people !== order.people ||
+    name.trim() !== (order.name || "").trim() ||
+    phone !== (order.phone || "");
+  const pastStart = draft.start < TODAY;
   const nights = reprice
     ? connected
       ? liveQuote || []
@@ -2205,6 +2216,13 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
               label="我已核对并同意新方案的逐晚报价与总额"
             />
           )}
+          {reprice && pastStart && (
+            <div className="space-top">
+              <Notice intent="warning">
+                原入住日期已早于今天，调整日期、房型或间数时请先选择今天或之后的入住日期。
+              </Notice>
+            </div>
+          )}
           {error && (
             <div className="space-top">
               <Notice intent="error">{error}</Notice>
@@ -2214,11 +2232,21 @@ function ModifyForm({ id, order }: { id: string; order?: Order }) {
             className="primary-action"
             size="large"
             appearance="primary"
-            disabled={busy || (reprice && connected && !newQuoteReady)}
+            disabled={
+              busy ||
+              !hasChanges ||
+              (reprice && pastStart) ||
+              (reprice && connected && !newQuoteReady)
+            }
             onClick={() => void save()}
           >
             {busy ? "正在核对新方案…" : "确认修改"}
           </Button>
+          {!hasChanges && (
+            <Text size={200} className="muted space-top">
+              请先修改至少一项住宿或联系信息后再提交。
+            </Text>
+          )}
           <Button
             className="primary-action"
             appearance="subtle"
@@ -2363,7 +2391,9 @@ export function AuthPage({
             </Text>
             <p className="muted">
               {returnTo
-                ? "登录后继续刚才的操作。"
+                ? register
+                  ? "注册后继续刚才的操作。"
+                  : "登录后继续刚才的操作。"
                 : register
                   ? "注册后可预订酒店、查看和调整住宿安排。"
                   : "登录后管理你的住宿与预订。"}
@@ -2394,6 +2424,7 @@ export function AuthPage({
           >
             <Input
               value={account}
+              input={{ autoCapitalize: "none", autoCorrect: "off", spellCheck: false }}
               onChange={(_, d) => setAccount(d.value)}
               autoComplete="username"
               placeholder={connected ? undefined : "演示账户名"}

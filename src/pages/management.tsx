@@ -293,19 +293,35 @@ export function CalendarPage({
       sellable = isPast ? 0 : available(data, staffHotel, room.id, date),
       incBlocked = incidentBlocked(data, staffHotel, room.id, date),
       unscheduled = connected && entry.version === 0,
+      notOpened = !isPast && !unscheduled && entry.total === 0,
+      cutoffClosed =
+        !isPast &&
+        !unscheduled &&
+        !notOpened &&
+        !incBlocked &&
+        !entry.stopped &&
+        room.enabled &&
+        connected &&
+        date === TODAY &&
+        Date.now() >= Date.parse(`${TODAY}T18:00:00+08:00`) &&
+        entry.total > used,
       soldOut =
         !isPast &&
+        !unscheduled &&
+        !notOpened &&
+        !cutoffClosed &&
         sellable === 0 &&
         !incBlocked &&
         !entry.stopped &&
-        !unscheduled,
+        room.enabled,
       lowStock =
         !isPast &&
         sellable > 0 &&
         sellable <= 2 &&
         !incBlocked &&
         !entry.stopped &&
-        !unscheduled;
+        !unscheduled &&
+        room.enabled;
     const statusLabel = isPast
       ? unscheduled
         ? "未排期 · 历史"
@@ -318,9 +334,13 @@ export function CalendarPage({
             ? "房型已停用"
             : entry.stopped
               ? "已停售"
-              : soldOut
-                ? "已满房"
-                : `可订 ${sellable} 间`;
+              : notOpened
+                ? "未开放"
+                : cutoffClosed
+                  ? "今日已截单"
+                  : soldOut
+                    ? "已满房"
+                    : `可订 ${sellable} 间`;
     if (isPast) {
       return (
         <div
@@ -361,7 +381,7 @@ export function CalendarPage({
         ]
           .filter(Boolean)
           .join(" ")}
-        aria-label={`${room.name} ${shortDate(date)}，${money(entry.price)}，可订 ${sellable} 间，编辑`}
+        aria-label={`${room.name} ${shortDate(date)}，${unscheduled ? "未排期" : money(entry.price)}，${statusLabel}，编辑`}
         onClick={() => open(room.id, date)}
       >
         <Text size={400} weight="semibold">
@@ -537,9 +557,11 @@ export function CalendarPage({
                       )}
                     </p>
                     <p className="muted">
-                      可订 {sellable} · 剩余{" "}
-                      {entry.total - occupied(data, staffHotel, room.id, focused)} ·
-                      总量 {entry.total}
+                      {unscheduled
+                        ? "未排期"
+                        : entry.total === 0
+                          ? "未开放 · 总量 0"
+                          : `可订 ${sellable} · 剩余 ${entry.total - occupied(data, staffHotel, room.id, focused)} · 总量 ${entry.total}`}
                     </p>
                   </div>
                   {isPast ? (
@@ -930,14 +952,14 @@ function OrderInspector({
           </div>
           <Button
             icon={<Eye20Regular />}
-            disabled={expiredPrivacy || (role === "admin" && !related)}
+            disabled={revealed || expiredPrivacy || (role === "admin" && !related)}
             onClick={() => {
               setPurpose(connected && role === "admin" ? "incident" : "");
               setError("");
               setContactOpen(true);
             }}
           >
-            登记用途并查看联系方式
+            {revealed ? "已登记用途并查看联系方式" : "登记用途并查看联系方式"}
           </Button>
           {role === "admin" && !related && (
             <Text size={200} className="muted">
@@ -956,7 +978,7 @@ function OrderInspector({
             <ol className="timeline space-top">
               {[...order.history].reverse().map((e, i) => (
                 <li key={i}>
-                  <time>{e.time}</time>
+                  <time>{formatDisplayTime(e.time)}</time>
                   {e.text}
                 </li>
               ))}
@@ -1300,6 +1322,7 @@ export function StaffOrders() {
         <Field label="查找订单编号">
           <Input
             value={search}
+            input={{ autoCapitalize: "none", autoCorrect: "off", spellCheck: false }}
             onChange={(_, d) => setSearch(d.value)}
             placeholder="输入订单编号"
           />
@@ -2151,7 +2174,7 @@ export function StatsPage() {
         "有效间夜约定金额(元)",
       ],
       ...snapshot.rows.map((row) => [
-        snapshot.at,
+        formatDisplayTime(snapshot.at),
         staffHotel,
         snapshot.start,
         snapshot.end,
@@ -2170,7 +2193,7 @@ export function StatsPage() {
       audit(
         "导出统计",
         staffHotel,
-        `同一快照 ${snapshot.at}；${snapshot.start} 至 ${snapshot.end}；${snapshot.rows.length} 行，无联系信息`,
+        `同一快照 ${formatDisplayTime(snapshot.at)}；${snapshot.start} 至 ${snapshot.end}；${snapshot.rows.length} 行，无联系信息`,
       );
     notify(
       `已导出 ${shortDate(snapshot.start)} — ${shortDate(snapshot.end)} 统计快照 CSV。`,
@@ -2255,7 +2278,7 @@ export function StatsPage() {
       </div>
       {error && <Notice intent="error">{error}</Notice>}
       <p className="muted">
-        当前快照：{snapshot.at} · {shortDate(snapshot.start)} —{" "}
+        当前快照：{formatDisplayTime(snapshot.at)} · {shortDate(snapshot.start)} —{" "}
         {shortDate(snapshot.end)}（不含） ·{" "}
         {snapshot.room === "all"
           ? "全部房型"
@@ -3141,6 +3164,7 @@ export function AuditPage() {
         <Field label="对象编号">
           <Input
             value={object}
+            input={{ autoCapitalize: "none", autoCorrect: "off", spellCheck: false }}
             onChange={(_, d) => setObject(d.value)}
             placeholder="订单、事件或酒店编号"
           />
@@ -3658,6 +3682,11 @@ export function AdminAccounts() {
                 <Input
                   value={username}
                   autoComplete="off"
+                  input={{
+                    autoCapitalize: "none",
+                    autoCorrect: "off",
+                    spellCheck: false,
+                  }}
                   onChange={(_, d) => setUsername(d.value)}
                 />
               </Field>

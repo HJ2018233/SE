@@ -668,15 +668,21 @@ test("管理员新建酒店不借用其他酒店图片且无空分隔符", async
 test("不可订房型显示不可订原因而非 ¥0、城市建议可选、手机端我的订单抽屉筛选", async ({
   page,
 }) => {
-  await open(page, "/hotel/qt");
-  await page.getByRole("button", { name: "修改日期与人数" }).click();
-  const dialog = page.getByRole("dialog");
-  await dialog
+  await open(page, "/explore");
+  await page.getByRole("button", { name: /修改住宿条件/ }).click();
+  const exploreDialog = page.getByRole("dialog");
+  await exploreDialog
     .getByRole("group", { name: "可订城市建议" })
     .getByRole("button", { name: "南京", exact: true })
     .click();
+  await exploreDialog.getByRole("button", { name: "查找酒店", exact: true }).click();
+
+  await open(page, "/hotel/qt");
+  await page.getByRole("button", { name: "修改日期与人数" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("目的地城市")).toHaveCount(0);
   await dialog.getByLabel("入住人数", { exact: false }).fill("3");
-  await dialog.getByRole("button", { name: "查找酒店", exact: true }).click();
+  await dialog.getByRole("button", { name: "更新条件", exact: true }).click();
 
   const firstRoom = page.locator(".room-option").first();
   await expect(firstRoom).toContainText("当前不可订");
@@ -838,4 +844,116 @@ test("日历历史只读与停用标示、统计筛选变更提醒、异常闭�
   await page.getByRole("button", { name: "关闭关联订单" }).click();
   await region.getByRole("button", { name: "EV2026001" }).first().click();
   await expect(page).toHaveURL(/#\/staff\/incidents\?id=EV2026001$/);
+});
+
+test("日期逐字手输不误补过去日期且关闭弹窗不滚动偏移", async ({ page }) => {
+  await open(page, "/explore");
+  await page.getByRole("button", { name: /修改住宿条件/ }).click();
+  const dialog = page.getByRole("dialog");
+  const startInput = dialog.getByLabel("入住日期");
+  const endInput = dialog.getByLabel("离店日期");
+  const initialEnd = await endInput.inputValue();
+
+  await startInput.fill("");
+  await startInput.type("2026-11-2", { delay: 10 });
+  await expect(startInput).toHaveValue("2026-11-2");
+  await expect(endInput).toHaveValue(initialEnd);
+
+  await startInput.fill("2026-11-02");
+  await expect(dialog.getByText("日期不能早于", { exact: false })).toBeVisible();
+  await expect(endInput).toHaveValue(initialEnd);
+
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+
+  await open(page, "/hotel/qt");
+  await page.getByRole("button", { name: "修改日期与人数" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "取消", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+});
+
+test("起价取最低单晚价、时间戳统一格式化、联系方式按钮防重与未开放日历态", async ({
+  page,
+}) => {
+  await open(page, "/explore");
+  await page.evaluate(() => {
+    const key = "hotel-ui-demo-v1";
+    const data = JSON.parse(localStorage.getItem(key)!) as DemoData;
+    const today = new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const addDays = (iso: string, offset: number) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d + offset));
+      return dt.toISOString().slice(0, 10);
+    };
+    const d1 = addDays(today, 7);
+    const d2 = addDays(today, 8);
+    for (const roomId of ["garden", "window", "twin"]) {
+      data.calendar[`qt/${roomId}/${d1}`] = { total: 4, price: 53800, stopped: false, version: 1 };
+      data.calendar[`qt/${roomId}/${d2}`] = { total: 4, price: 50800, stopped: false, version: 1 };
+    }
+    data.calendar[`qt/twin/${addDays(today, 9)}`] = {
+      total: 0,
+      price: 52800,
+      stopped: false,
+      version: 1,
+    };
+    const order = data.orders.find((o) => o.id === "HB20260001")!;
+    order.history = [{ time: "2026-11-22T09:08:05.739252+08:00", text: "ISO时间戳记录" }];
+    localStorage.setItem(key, JSON.stringify(data));
+  });
+  await page.reload();
+  await expect(page.locator(".ticket-price")).toContainText("¥508");
+
+  await open(page, "/order/HB20260001");
+  await expect(page.locator(".timeline")).toContainText("2026-11-22 09:08:05");
+
+  await open(page, "/staff/orders");
+  await page
+    .getByRole("row")
+    .filter({ hasText: "HB20260001" })
+    .getByRole("button", { name: "查看与处理" })
+    .click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer.locator(".timeline")).toContainText("2026-11-22 09:08:05");
+  const revealBtn = drawer.getByRole("button", { name: /登记用途并查看联系方式/ });
+  await revealBtn.click();
+  await page.getByLabel("查看用途", { exact: false }).fill("核对到店时间");
+  await page.getByRole("button", { name: "登记用途并查看", exact: true }).click();
+  await expect(drawer.getByRole("button", { name: "已登记用途并查看联系方式" })).toBeDisabled();
+
+  await open(page, "/staff/calendar");
+  await expect(page.locator(".day-cell", { hasText: "未开放" }).first()).toBeVisible();
+});
+
+test("订单筛选去重且含全状态、改订未改禁止提交、账户导航高亮与输入框属性", async ({
+  page,
+}) => {
+  await open(page, "/orders");
+  const quickBar = page.getByRole("group", { name: "快捷状态筛选" });
+  await expect(quickBar.getByRole("button", { name: "已拒绝", exact: true })).toBeVisible();
+  await expect(quickBar.getByRole("button", { name: "已超时", exact: true })).toBeVisible();
+  await expect(page.locator(".orders-filter-bar").getByLabel("订单状态")).toHaveCount(0);
+
+  await open(page, "/modify/HB20260001");
+  await expect(page.getByRole("button", { name: "确认修改", exact: true })).toBeDisabled();
+
+  await open(page, "/account");
+  await expect(
+    page.locator(".desktop-navigation").getByRole("tab", { name: "探索酒店" }),
+  ).toHaveAttribute("aria-selected", "false");
+
+  await page.goto("/#/register?returnTo=%2Fhotel%2Fqt");
+  await expect(page.getByText("注册后继续刚才的操作。", { exact: true })).toBeVisible();
+  const accountInput = page.getByLabel("账户名", { exact: false });
+  await expect(accountInput).toHaveAttribute("autocapitalize", "none");
+  await expect(accountInput).toHaveAttribute("autocorrect", "off");
+  await expect(accountInput).toHaveAttribute("spellcheck", "false");
 });
